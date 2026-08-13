@@ -9,7 +9,8 @@ to contain today.
 from __future__ import annotations
 
 import json
-from pathlib import Path
+
+from _gridbuilder_tools import storage as _storage
 
 #: (country, feature) -> row count. Distinct values so a test that mixes up
 #: which extract it is looking at fails instead of coincidentally passing.
@@ -26,7 +27,7 @@ def element_count(country: str, feature: str) -> int:
     return MOCK_ELEMENTS.get((country, feature), DEFAULT_ELEMENTS)
 
 
-def write_extract(csv_path: Path, geojson_path: Path, country: str, feature: str) -> None:
+def write_extract(csv_path: str, geojson_path: str, country: str, feature: str) -> None:
     """Write a mock CSV + GeoJSON pair for one (country, feature)."""
     n = element_count(country, feature)
     lines = ["id,power,voltage,tags"]
@@ -41,8 +42,12 @@ def write_extract(csv_path: Path, geojson_path: Path, country: str, feature: str
                 "geometry": {"type": "Point", "coordinates": [4.35 + i * 0.01, 50.85]},
             }
         )
-    csv_path.parent.mkdir(parents=True, exist_ok=True)
-    csv_path.write_text("\n".join(lines) + "\n")
-    geojson_path.write_text(
-        json.dumps({"type": "FeatureCollection", "features": features}, indent=1)
+    # Through the storage backend, so the offline path exercises the same
+    # write route as the real one — a mock that only works on local disk would
+    # hide exactly the fleet bug this package had.
+    fs = _storage.get_storage(str(csv_path))
+    fs.write_text(str(csv_path), "\n".join(lines) + "\n")
+    fs.write_text(
+        str(geojson_path),
+        json.dumps({"type": "FeatureCollection", "features": features}, indent=1),
     )

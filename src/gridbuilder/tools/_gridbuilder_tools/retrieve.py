@@ -27,6 +27,7 @@ to suspect anything.
 from __future__ import annotations
 
 import csv
+import io
 import json
 import logging
 import os
@@ -35,6 +36,8 @@ import tempfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
+
+from _gridbuilder_tools import storage as _storage
 
 logger = logging.getLogger(__name__)
 
@@ -109,17 +112,12 @@ def sidecar_path(artifact: str) -> str:
 
 
 def read_sidecar(path: str) -> dict | None:
-    p = Path(path)
-    if not p.is_file():
-        return None
-    try:
-        data = json.loads(p.read_text())
-    except (OSError, ValueError):
-        # Unreadable provenance means the artifact cannot be PROVEN current,
-        # and trusting it anyway is the failure this module is built against.
-        logger.warning("unreadable sidecar %s — treating as absent", path)
-        return None
-    return data if isinstance(data, dict) else None
+    """Provenance for an artifact, or None when absent or unreadable.
+
+    Unreadable means the artifact cannot be PROVEN current, and trusting it
+    anyway is the failure this module is built against.
+    """
+    return _storage.read_json(sidecar_path(path) if not path.endswith(SIDECAR_SUFFIX) else path)
 
 
 def is_current(
@@ -143,13 +141,14 @@ def is_current(
     * it was produced for this country/feature/primary/source, so a config
       change re-derives instead of silently serving the previous config's data.
     """
-    side = read_sidecar(sidecar_path(csv_path))
+    fs = _storage.get_storage(csv_path)
+    side = read_sidecar(csv_path)
     if side is None:
         return False, "no sidecar"
-    if not Path(csv_path).is_file():
+    if not fs.exists(csv_path):
         return False, "artifact missing"
 
-    actual = Path(csv_path).stat().st_size
+    actual = fs.size(csv_path)
     if int(side.get("size_bytes", -1)) != actual:
         return False, f"size {actual} != recorded {side.get('size_bytes')}"
     if side.get("tool_version") != TOOL_VERSION:
@@ -186,6 +185,7 @@ def write_sidecar(
     target_date: str | None = None,
 ) -> None:
     """Record what produced this artifact. Written LAST, after the data."""
+    fs = _storage.get_storage(csv_path)
     payload = {
         "country": country,
         "feature": feature,
@@ -193,7 +193,7 @@ def write_sidecar(
         "source": source,
         "target_date": target_date,
         "elements": elements,
-        "size_bytes": Path(csv_path).stat().st_size,
+        "size_bytes": fs.size(csv_path),
         "generated_at": generated_at,
         "tool": TOOL_NAME,
         "tool_version": TOOL_VERSION,
@@ -201,7 +201,7 @@ def write_sidecar(
         "extractor_version": earth_osm_version(),
         "license": "ODbL 1.0 (OpenStreetMap contributors)",
     }
-    Path(sidecar_path(csv_path)).write_text(json.dumps(payload, indent=1, sort_keys=True))
+    fs.write_text(sidecar_path(csv_path), json.dumps(payload, indent=1, sort_keys=True))
 
 
 # ---------------------------------------------------------------------------
@@ -216,11 +216,12 @@ def count_rows(csv_path: str) -> int:
     a successful download of nothing, and is exactly what an existence check
     cannot distinguish from a real result.
     """
-    p = Path(csv_path)
-    if not p.is_file():
+    fs = _storage.get_storage(csv_path)
+    if not fs.exists(csv_path):
         return 0
-    with p.open(newline="", encoding="utf-8", errors="replace") as fh:
-        rows = sum(1 for _ in csv.reader(fh))
+    # Read once rather than stream: these extracts are megabytes, and an object
+    # store has no cheap line-wise read anyway.
+    rows = sum(1 for _ in csv.reader(io.StringIO(fs.read_text(csv_path))))
     return max(0, rows - 1)
 
 
@@ -270,10 +271,11 @@ def retrieve_feature(
     if source not in VALID_SOURCES:
         raise ValueError(f"source must be one of {VALID_SOURCES}, got {source!r}")
 
-    out = Path(out_dir)
-    out.mkdir(parents=True, exist_ok=True)
+    fs = _storage.get_storage(out_dir)
+    fs.mkdir_p(out_dir)
     csv_name, geojson_name = output_names(country, feature)
-    csv_path, geojson_path = out / csv_name, out / geojson_name
+    csv_path = _storage.Storage.join(out_dir, csv_name)
+    geojson_path = _storage.Storage.join(out_dir, geojson_name)
 
     if not force:
         current, why = is_current(
@@ -289,9 +291,9 @@ def retrieve_feature(
             return FeatureSet(
                 country=country,
                 feature=feature,
-                csv_path=str(csv_path),
-                geojson_path=str(geojson_path),
-                elements=count_rows(str(csv_path)),
+                csv_path=csv_path,
+                geojson_path=geojson_path,
+                elements=count_rows(csv_path),
                 was_cached=True,
             )
         logger.info("%s/%s: re-extracting — %s", country, feature, why)
@@ -299,7 +301,7 @@ def retrieve_feature(
     if use_mock:
         from _gridbuilder_tools import gridbuilder_mocks
 
-        gridbuilder_mocks.write_extract(csv_path, geojson_path, country, feature)
+        gridbuilder_mocks.write_extract(csv_path, geojson_path, country, feature)  # via storage
     else:
         _run_earth_osm(
             country=country,
@@ -316,9 +318,9 @@ def retrieve_feature(
             target_date=target_date,
         )
 
-    elements = count_rows(str(csv_path))
+    elements = count_rows(csv_path)
     write_sidecar(
-        str(csv_path),
+        csv_path,
         country=country,
         feature=feature,
         primary_name=primary_name,
@@ -331,8 +333,8 @@ def retrieve_feature(
     return FeatureSet(
         country=country,
         feature=feature,
-        csv_path=str(csv_path),
-        geojson_path=str(geojson_path),
+        csv_path=csv_path,
+        geojson_path=geojson_path,
         elements=elements,
         was_cached=False,
     )
@@ -364,8 +366,8 @@ def _run_earth_osm(
     feature: str,
     primary_name: str,
     source: str,
-    csv_path: Path,
-    geojson_path: Path,
+    csv_path: str,
+    geojson_path: str,
     data_dir: str | None,
     force: bool = False,
     mp: bool = True,
@@ -413,9 +415,13 @@ def _run_earth_osm(
                 f"earth_osm produced no CSV for {country}/{feature} — "
                 f"check the region code and that '{primary_name}={feature}' exists in that extract"
             )
-        shutil.move(str(found_csv), str(csv_path))
+        # Finalize through the storage backend: on a fleet `csv_path` is an
+        # `s3://` URI, and shutil.move would create a directory named `s3:`
+        # on the container's disk, which vanishes with the container.
+        fs = _storage.get_storage(str(csv_path))
+        fs.finalize_from_local(str(found_csv), str(csv_path))
         if found_geojson is not None:
-            shutil.move(str(found_geojson), str(geojson_path))
+            fs.finalize_from_local(str(found_geojson), str(geojson_path))
         else:
             # A CSV without its GeoJSON is a partial result; say so rather than
             # leaving a downstream step to fail on a missing file.

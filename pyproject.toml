@@ -13,6 +13,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# s3:// output. The fleet image already carries boto3 (facetwork[s3]); this is
+# for a standalone install that wants to write to MinIO.
+s3 = ["boto3>=1.34"]
 dev = ["pytest>=8.0"]
 
 [project.entry-points."facetwork.domains"]

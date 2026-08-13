@@ -59,7 +59,7 @@ can use a content hash of these CSVs as a cache key.
 | **Bounding it** | `--cores`, global | `limit` on the country loop — each iteration downloads a regional PBF onto a shared disk |
 | **Reuse decision** | outputs exist and are newer than inputs. `rule retrieve_osm` declares **no file inputs**, so nothing can ever make its outputs look stale | recorded provenance: extractor version, tool version, source, country/feature/primary, target date, size |
 | **Escape hatch** | `force_redownload: true`, set by a human who already suspected | `force`, plus automatic re-derivation when any recorded input moves |
-| **Where outputs live** | local filesystem paths | `out_dir` goes through the storage abstraction — a local path, `s3://…` or `hdfs://…`, unchanged |
+| **Where outputs live** | local filesystem paths | `out_dir` goes through a storage backend — a local path or `s3://`, unchanged. Verified against MinIO |
 | **Completion evidence** | the output file | a persisted step state machine, surviving the machine that started the run |
 
 The reuse row is the substantive one. Upstream's retrieve rule has no inputs, so
@@ -76,6 +76,7 @@ and it is only as good as the keys the author chose to record. See the thesis'
 
 ```bash
 pip install -e .            # pulls earth-osm
+pip install -e '.[s3]'      # + boto3, for s3:// output
 fw runner start --domain gridbuilder
 ```
 
@@ -111,7 +112,7 @@ python tools/compare_with_snakemake.py \
 ## Tests
 
 ```bash
-pytest            # 23 tests, no network and no MongoDB (use_mock)
+pytest            # 25 tests, no network and no MongoDB (use_mock)
 ```
 
 ## Licence
