@@ -1,0 +1,328 @@
+# Canonical specification — the tools + handlers pattern.
+#
+# The reusable contract for every domain pipeline. A pipeline ships as a
+# standalone, pip-installable package (fwh_<domain>: fwh_osm, fwh_noaa_weather,
+# fwh_save_earth, and future siblings) discovered via the `facetwork.domains`
+# entry point — not as an in-repo directory. (A simpler in-repo examples/<name>/
+# dir with no pyproject/src is a supported variant; see layout.in_repo_variant.)
+# It defines the package layout, CLI contract, shared-library split, handler-side
+# shim, and cache conformance rules that make a pipeline scriptable, testable,
+# and reusable from the FFL runtime.
+
+identity:
+  name: tools-pattern
+  kind: system-contract
+  version: 2
+
+purpose: |
+  One domain, one code path. A "tool" is a small shell/Python CLI that
+  performs one step of a pipeline (download, convert, extract, render).
+  An FFL "handler" is the step's runtime-invocable implementation.
+  Both call into the same shared library (tools/_<pkg>_tools/). A developer
+  reading the tool at the terminal and a workflow running in production
+  exercise identical logic with identical cache effects — no drift
+  between the two surfaces.
+
+  Canonical examples (standalone packages):
+    - https://github.com/rlemke/fwh_osm/ (OSM ingestion → vector tiles → HTML maps)
+    - https://github.com/rlemke/fwh_noaa_weather/ (NOAA GHCN ingestion → climate trends)
+    - https://github.com/rlemke/fwh_save_earth/ (OpenLitterMap + EPA → MapLibre maps)
+
+# ---------------------------------------------------------------------------
+# Package layout — a domain pipeline is a standalone pip-installable package.
+# ---------------------------------------------------------------------------
+layout:
+  package_repo: "fwh_<domain>/"           # standalone git repo (e.g. fwh_osm, fwh_save_earth)
+  import_package: "src/<import_pkg>/"     # the Python package (e.g. src/osm_geocoder/, src/save_earth/)
+  naming_note: |
+    <domain> is the entry-point / ExamplePackage name (kebab-case:
+    osm-geocoder, save-earth); <import_pkg> is the Python package name
+    (snake_case: osm_geocoder, save_earth). They need not match.
+
+  required_repo_files:
+    pyproject:
+      path: "fwh_<domain>/pyproject.toml"
+      description: |
+        Declares the package and the discovery entry point:
+          [project.entry-points."facetwork.domains"]
+          <domain> = "<import_pkg>:example"
+        plus [tool.setuptools.packages.find] where=["src"] and
+        [tool.setuptools.package-data] shipping ffl/*.ffl.
+    license_readme_gitignore:
+      path: "fwh_<domain>/{LICENSE, README.md, .gitignore}"
+      description: ".gitignore MUST exclude __pycache__/ and *.egg-info/ — never commit bytecode."
+    agent_py:
+      path: "fwh_<domain>/agent.py"
+      description: "Optional standalone RegistryRunner entrypoint (create_registry_runner + register_all_registry_handlers)."
+
+  required_subdirs:
+    entry_point:
+      path: "src/<import_pkg>/__init__.py"
+      description: "Exports `example = ExamplePackage(name='<domain>', ffl_dir=..., register_handlers=...)` — the object the entry point loads."
+    tools:
+      path: "src/<import_pkg>/tools/"
+      description: "CLI tools + their shared library. NOT a Python package (no tools/__init__.py) so CLIs run standalone via the sys.path shim."
+      contents:
+        - "<tool>.py        (Python CLI — runnable directly)"
+        - "<tool>.sh        (shell wrapper — sources .env/.venv if present, execs python)"
+        - "_<pkg>_tools/     (shared library — package-unique name; see lib_contract.naming)"
+        - "README.md        (pipeline diagram + per-tool summary)"
+    handlers:
+      path: "src/<import_pkg>/handlers/"
+      description: "FFL event-facet handlers — thin dispatchers."
+      contents:
+        - "__init__.py       (register_all_registry_handlers(runner); deferred imports)"
+        - "<facet_group>/<group>_handlers.py  (handler modules; register with a file:// module_uri)"
+        - "shared/<domain>_utils.py  (sys.path shim re-exporting tools/_<pkg>_tools/)"
+    ffl:
+      path: "src/<import_pkg>/ffl/"
+      description: "FFL definitions, shipped via package-data ffl/*.ffl."
+      contents:
+        - "<name>.ffl        (the workflow + facet + schema definitions)"
+    agent_spec:
+      path: "fwh_<domain>/agent-spec/"
+      description: "Byte-identical vendored copies of this contract + cache-layout.agent-spec.yaml."
+    tests:
+      path: "fwh_<domain>/tests/  and/or  src/<import_pkg>/handlers/**/tests/"
+      description: "pytest suite for handlers, _<pkg>_tools, and FFL compilation. List both in pyproject testpaths."
+
+  in_repo_variant: |
+    A simpler example may live in-repo at examples/<name>/ inside the Facetwork
+    repo — handlers/, ffl/, tools/ directly under it, no pyproject/src/ —
+    discovered by facetwork.domains.discover_local_domains() instead of the
+    entry point. The same tools / handlers / _<pkg>_tools split and the
+    package-unique lib-naming rule still apply. Prefer the standalone package
+    for anything shipped to production; scaffold from facetwork's example-template/.
+
+# ---------------------------------------------------------------------------
+# The tool contract — what "a CLI tool" means here.
+# ---------------------------------------------------------------------------
+tool_contract:
+  structure:
+    - "Every tool is ONE Python file + ONE shell wrapper. No more, no less."
+    - "The .py is runnable directly: `python tools/<name>.py --help` works."
+    - "The .sh is a thin wrapper that sources scripts/_env.sh + .venv/bin/activate if present, then execs python3 (works whether or not the repo has those)."
+    - "Shell wrappers do NOT parse arguments — argparse is in the .py."
+
+  python_cli:
+    argparse:
+      - "Use argparse. Module docstring duplicates the usage lines for --help."
+      - "Tool name in the file matches the .sh (kebab-case) but uses snake_case for the .py (download_pbf.py / download-pbf.sh)."
+    output_separation:
+      - "stdout: structured output (JSON, CSV, region lists) intended for piping."
+      - "stderr: human-readable log lines, progress, errors."
+      - "This split is load-bearing — tools compose via pipes, and mixing channels breaks them."
+    exit_codes:
+      - "0 on success."
+      - "Non-zero on failure. Errors go to stderr, never stdout."
+    entrypoint:
+      - "Module defines `main() -> int` returning the exit code."
+      - "Guarded by `if __name__ == \"__main__\": sys.exit(main())`."
+    logging:
+      - "Use Python `logging` — default level INFO."
+      - "Expose `--log-level` (default INFO) so the harness can dial it up/down."
+
+  shell_wrapper:
+    template: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+      SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+      REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
+      [ -f "${REPO_ROOT}/scripts/_env.sh" ] && source "${REPO_ROOT}/scripts/_env.sh"
+      [ -f "${REPO_ROOT}/.venv/bin/activate" ] && source "${REPO_ROOT}/.venv/bin/activate"
+      exec python3 "${SCRIPT_DIR}/<tool_name>.py" "$@"
+
+  common_flags:
+    - name: "--force"
+      purpose: "Re-run even if the cache is current."
+    - name: "--dry-run"
+      purpose: "Report what would happen without writing to the cache."
+    - name: "--use-mock"
+      purpose: "Force offline / deterministic mode (no network). Required for tests to run without network access."
+    - name: "--log-level"
+      purpose: "Python logging level. Default INFO."
+
+  dependencies:
+    - "Tools MUST NOT depend on the Facetwork runtime, MongoDB, or the dashboard."
+    - "HDFS / PostGIS / external APIs are fine via the storage abstraction."
+    - "The ONLY required runtime deps are stdlib + the tool's domain libs (requests, osmium, etc.)."
+
+# ---------------------------------------------------------------------------
+# The _<pkg>_tools/ contract — the shared library behind the tools.
+# ---------------------------------------------------------------------------
+lib_contract:
+  purpose: |
+    Every tool is a thin CLI shell around one or more _<pkg>_tools/ functions.
+    The same functions are the handler-facing API. One code path, one
+    cache, one set of semantics.
+
+  naming:
+    rule: |
+      The shared library's directory and top-level import name MUST be
+      unique per package — conventionally `_<pkg>_tools/` (e.g. `_osm_tools/`,
+      `_noaa_tools/`, `_save_earth_tools/`). NEVER name it the bare `_lib`.
+    why: |
+      Standalone example packages are ALL imported into the same Python
+      process by `facetwork.domains.discover_entry_point_domains()` — every
+      runner calls it at startup. The tool_side / shim imports below put
+      `tools/` on `sys.path` and import the library by its bare top-level name.
+      If two co-installed packages both call it `_lib` they collide in
+      `sys.modules`: the first cached wins and the rest's handler imports fail
+      (`ImportError: cannot import name X from '_lib'`). A package-unique name
+      makes the `sys.modules` key distinct so it can never be shadowed.
+    alternative: |
+      A package-qualified import (`from <pkg>.tools._lib import ...`, with
+      `tools/` a real package — the form jenkins/anthropic/genomics use) is
+      equally collision-safe. The unique top-level name above is preferred when
+      tools must also run standalone as `python tools/foo.py` without `src/` on
+      `sys.path`.
+
+  required_primitives:
+    sidecar:
+      path: "_<pkg>_tools/sidecar.py"
+      role: "Per-entry cache sidecar I/O (read/write/presence/lock/listing)."
+      conforms_to: "agent-spec/cache-layout.agent-spec.yaml"
+    storage:
+      path: "_<pkg>_tools/storage.py"
+      role: "Backend abstraction (LocalStorage, HdfsStorage). Root-path derivation."
+      conforms_to: "agent-spec/storage.agent-spec.yaml"
+
+  module_style:
+    - "One pipeline step per _<pkg>_tools module (download, parse, extract, build, render)."
+    - "Pure/compute modules have NO I/O — e.g. the parse module is pure functions."
+    - "I/O modules use sidecar + storage — never write directly to cache paths bypassing the sidecar protocol."
+    - "Mocks for offline mode live in a sibling module (`_<pkg>_tools/<domain>_mocks.py`) and are exercised via a `use_mock` kwarg, never via import-time env detection that's hard to control in tests."
+
+  imports:
+    tool_side: "`sys.path.insert(0, str(Path(__file__).resolve().parent))` then `from _<pkg>_tools import <module>`. This lets the tool script run as `python tools/foo.py` without the whole tools/ tree being a Python package."
+    lib_side: "Between _<pkg>_tools modules, use absolute imports: `from _<pkg>_tools import sidecar` — never relative."
+
+# ---------------------------------------------------------------------------
+# The handler contract — handlers are thin dispatchers.
+# ---------------------------------------------------------------------------
+handler_contract:
+  thinness_rule: |
+    A handler file is a registry + parameter-coercion layer. It should
+    do NO domain work inline. Every substantive operation routes to a
+    _<pkg>_tools/ function. This makes handler unit tests easy and keeps the
+    CLI and FFL surfaces exercising literally the same code.
+
+  structure:
+    - "Each facet group lives in its own sub-package: `handlers/<group>/<group>_handlers.py`."
+    - "Handler module exposes `handle(payload: dict) -> dict` (RegistryRunner entrypoint)."
+    - "Handler module also exposes `register_handlers(runner)` for programmatic registration."
+    - "All facets in the group are listed in a `_DISPATCH` dict, e.g. `{\"weather.Analysis.AnalyzeStationClimate\": handle_analyze_station_climate}`."
+
+  calls_lib_via:
+    shim: "handlers/shared/<domain>_utils.py"
+    role: "A compatibility / re-export layer. Puts tools/ on sys.path, re-exports the _<pkg>_tools symbols the handlers use, and optionally wraps them to preserve legacy signatures."
+    example: |
+      # handlers/shared/<domain>_utils.py
+      _TOOLS_ROOT = Path(__file__).resolve().parents[2] / "tools"
+      if str(_TOOLS_ROOT) not in sys.path:
+          sys.path.insert(0, str(_TOOLS_ROOT))
+      from _<pkg>_tools.foo import bar  # noqa: E402
+
+  stateful_deps:
+    rule: |
+      Side effects that require infrastructure NOT available to the tool
+      (e.g. MongoDB writes, Redis state, message queues) stay in the
+      handler layer — NEVER in _<pkg>_tools. _<pkg>_tools must always be runnable
+      standalone from a CLI without any cluster available.
+    example: |
+      # _<pkg>_tools returns data; handler persists it to Mongo
+      summaries = climate_analysis.compute_yearly_summaries(daily, ...)
+      report_store.upsert_report(...)   # Mongo write — handler-only
+
+# ---------------------------------------------------------------------------
+# Cache conformance — defer to cache-layout spec for layout rules.
+# ---------------------------------------------------------------------------
+cache_conformance:
+  defers_to: "agent-spec/cache-layout.agent-spec.yaml"
+  summary:
+    - "One namespace per domain: cache/<namespace>/<cache_type>/<relative_path>."
+    - "Every cached artifact has a sibling <artifact>.meta.json sidecar."
+    - "Writes use: stage → hash → finalize_from_local → write_sidecar (in that order)."
+    - "Sidecar WRITE is the last step — readers treat missing sidecar as 'entry not present'."
+    - "Overwrite contention is arbitrated with per-entry fcntl locks via sidecar.entry_lock."
+
+  namespace_examples:
+    - namespace: "osm"
+      cache_types: ["pbf", "geojson", "shapefiles", "extract", "vector_tiles", "html", "graphhopper", "valhalla", "osrm"]
+    - namespace: "noaa-weather"
+      cache_types: ["catalog", "station-csv", "stations-discovered", "climate-summary", "region-trend", "geocode"]
+
+# ---------------------------------------------------------------------------
+# Test conformance.
+# ---------------------------------------------------------------------------
+tests:
+  coverage_rule: |
+    Every _<pkg>_tools module has a pytest test file. Every tool has at least a
+    smoke test (import + --help). Handlers get integration-style tests
+    that mock the Mongo side effects but exercise the real _<pkg>_tools code
+    path end-to-end in offline / use_mock mode.
+
+  offline_requirement: |
+    The full suite must pass with NO network and NO MongoDB. CI uses
+    `use_mock=True` or `FW_DATA_ROOT=$TMPDIR` + deterministic mocks
+    from `_<pkg>_tools/<domain>_mocks.py`. Tests that legitimately need live
+    services are marked with `@pytest.mark.integration` and excluded
+    from the default run.
+
+  monkeypatch_anti_pattern:
+    avoid: |
+      Tests that monkey-patch module-level globals (e.g. `HAS_REQUESTS`,
+      `_CACHE_DIR`) are brittle — they couple tests to implementation
+      internals that don't exist in a refactor. Prefer env-var overrides
+      (`FW_DATA_ROOT`) and explicit `use_mock=True` kwargs.
+
+# ---------------------------------------------------------------------------
+# Creating a new domain example.
+# ---------------------------------------------------------------------------
+new_domain_checklist:
+  step_1_scaffold:
+    - "Copy facetwork's example-template/ to a new fwh_<domain>/ repo; rename example_template -> <import_pkg> and set pyproject.toml name + entry point (`<domain> = \"<import_pkg>:example\"`)."
+    - "Create src/<import_pkg>/{tools,handlers,ffl}/ and a repo-root tests/. Vendor agent-spec/{tools-pattern,cache-layout}.agent-spec.yaml."
+    - "Copy https://github.com/rlemke/fwh_osm/blob/main/src/osm_geocoder/tools/_osm_tools/{sidecar,storage}.py to src/<import_pkg>/tools/_<pkg>_tools/ (they are namespace-agnostic)."
+    - "Add __init__.py: src/<import_pkg>/__init__.py exports `example: ExamplePackage`; each handlers/ subpackage gets one; tools/ does NOT (keeps CLIs runnable standalone)."
+    - "pip install -e . — confirm `facetwork.domains.discover_entry_point_domains()` lists <domain>."
+
+  step_2_lib:
+    - "Define namespace = '<name>' as a module-level constant in each _<pkg>_tools domain module."
+    - "Pure-compute modules (parsers, analysis) — no I/O, easy to unit-test."
+    - "I/O modules use sidecar + storage. Staged writes only. Never bypass the sidecar protocol."
+    - "Every domain-specific download path gets a deterministic mock in _<pkg>_tools/<domain>_mocks.py for offline tests."
+
+  step_3_cli:
+    - "One .py + one .sh per tool. argparse in .py only."
+    - "Expose --force, --dry-run (where meaningful), --use-mock, --log-level."
+    - "Structured output on stdout (JSON preferred); logs on stderr."
+    - "Flag-accept both positional args and --<input>-file for batch invocations, so the tool is scriptable from update-all-style wrappers."
+
+  step_4_handlers:
+    - "Each facet group: handlers/<group>/<group>_handlers.py."
+    - "handlers/shared/<name>_utils.py is the sys.path shim + legacy wrappers + handler-only state (Mongo)."
+    - "Handler functions: coerce params, call _<pkg>_tools, persist to the handler-only store, return a JSON-serializable dict."
+
+  step_5_tests:
+    - "pytest must pass offline (testpaths: repo-root tests/ + src/<import_pkg>/handlers)."
+    - "Tests set FW_DATA_ROOT=tmp_path and pass use_mock=True — do NOT monkey-patch _<pkg>_tools internals."
+    - "Add smoke tests for every CLI (import + --help exit 0)."
+
+  step_6_docs:
+    - "Add src/<import_pkg>/tools/README.md with the pipeline diagram (see https://github.com/rlemke/fwh_osm for the canonical template)."
+    - "Reference this spec (tools-pattern.agent-spec.yaml) and cache-layout.agent-spec.yaml in the README."
+
+# ---------------------------------------------------------------------------
+# What does NOT belong in tools/ (go elsewhere).
+# ---------------------------------------------------------------------------
+out_of_scope:
+  - "Workflow step definitions (event facets, FFL) → src/<import_pkg>/ffl/."
+  - "Scripts that manage the Facetwork stack itself (runners, Docker, databases) → the Facetwork repo's scripts/, not the package."
+  - "Test fixtures or pytest helpers → the package's tests/."
+  - "Anything that must run inside a Facetwork task. If it needs the runtime, it's a handler, not a tool. (The handler may still call the tool's _<pkg>_tools function.)"
+
+human_docs:
+  - "https://github.com/rlemke/fwh_osm/blob/main/src/osm_geocoder/tools/README.md — canonical reference pipeline."
+  - "https://github.com/rlemke/fwh_noaa_weather/blob/main/src/noaa_weather/tools/README.md — canonical second example."
+  - "docs/architecture/overview.md — how tools + handlers fit into the broader runtime."

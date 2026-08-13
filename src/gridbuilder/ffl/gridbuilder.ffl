@@ -1,0 +1,189 @@
+/** grid-builder in FFL — power-grid models from OpenStreetMap.
+  *
+  * The Facetwork equivalent of PyPSA's `grid-builder`, a Snakemake workflow
+  * (https://github.com/PyPSA/grid-builder). It does the SAME work with the SAME
+  * extraction library (`earth_osm`); only the orchestrator differs, which is the
+  * point — a comparison where the payload changes too compares nothing.
+  *
+  * SCOPE. Upstream's README describes four stages (retrieve → clean/infer →
+  * topology → validate) but as of commit 2f20a35 only **retrieve** is
+  * implemented: `rule retrieve_osm` (one country) and `rule retrieve_osm_all`
+  * (the aggregate). This ports that, and nothing is claimed about the three
+  * stages neither project has built. `ValidateRetrieval` below is deliberately
+  * beyond parity and is marked as such.
+  *
+  * THE STRUCTURE BEING COMPARED. Snakemake fans out with a double `expand()`
+  * over countries × features and infers the DAG backwards from the requested
+  * files:
+  *
+  *     rule retrieve_osm_all:
+  *         input: expand("{country}_{feature}.csv",
+  *                       country=config["countries"], feature=config["retrieve"]["features"])
+  *
+  * Here the same fan-out is two nested `foreach` blocks, and the work list is a
+  * value that arrives at run time rather than a wildcard resolved against the
+  * submitting machine's filesystem. `limit` bounds how many countries are in
+  * flight, because each one downloads a regional PBF — that is a shared network
+  * and a shared scratch disk, not a reason to open fifty sockets at Geofabrik.
+  *
+  * THE REUSE DECISION is where the two differ most, and it is the subject of
+  * the thesis' §13.3. Snakemake skips `retrieve_osm` when its outputs exist and
+  * are newer than their inputs; the rule has no file inputs, so in practice the
+  * outputs are never rebuilt until someone passes `force_redownload` by hand.
+  * `Retrieve` records what produced each artifact — the extractor's version, the
+  * source, the OSM feature counts — and reuses only when those still match. */
+namespace grid.osm {
+    use fw.file
+
+    /** What one (country, feature) extraction produced. */
+    schema FeatureSet {
+        country: String,
+        feature: String,
+        csv_path: String,
+        geojson_path: String,
+        elements: Int,
+        was_cached: Boolean
+    }
+
+    /** Retrieve ONE OSM power feature for ONE country — the unit of work, and
+      * the exact granularity of upstream's `rule retrieve_osm`.
+      *
+      * `source` is `geofabrik` (regional PBF extract, what upstream defaults to)
+      * or `overpass` (live API, better for a single small region). `out_dir` is
+      * storage-aware: a local path, `s3://…` or `hdfs://…`, so the same workflow
+      * runs on a laptop and on a fleet whose data lives in the object store.
+      *
+      * Reuse is decided on the recorded extractor version + source + feature
+      * set, not on the output file existing. `force` overrides it. */
+    event facet Retrieve(
+        country: String,
+        feature: String,
+        out_dir: String,
+        primary_name: String = "power",
+        source: String = "geofabrik",
+        force: Boolean = false,
+        mp: Boolean = true,
+        stream_backend: Boolean = true,
+        cache_primary: Boolean = false,
+        target_date: String = "",
+        use_mock: Boolean = false
+    ) => (
+        result: FeatureSet
+    ) with RetryPolicy() with Effect(kind = "external") with Cost(tier = "expensive")
+
+    /** Count what came out and refuse an empty extraction.
+      *
+      * BEYOND UPSTREAM PARITY — grid-builder has no validate stage yet. It is
+      * here because an empty result is the failure this domain is most likely to
+      * produce silently: a country code that Geofabrik spells differently, or a
+      * feature that has no elements in that extract, yields a valid CSV with a
+      * header and no rows. Downstream that becomes a grid with no substations,
+      * which looks like a modelling result rather than a missing download. */
+    event facet ValidateRetrieval(
+        csv_path: String,
+        min_elements: Int = 1
+    ) => (
+        elements: Int,
+        ok: Boolean,
+        detail: String
+    ) with Effect(kind = "io") with Cost(tier = "cheap")
+
+    /** Every feature for one country — the inner `expand()` over features. */
+    facet RetrieveCountry(
+        country: String,
+        features: Json,
+        out_dir: String,
+        primary_name: String,
+        source: String,
+        force: Boolean,
+        use_mock: Boolean
+    ) => (
+        sets: Json
+    ) andThen foreach f in $.features {
+        got = Retrieve(
+            country = $.country,
+            feature = $.f,
+            out_dir = $.out_dir,
+            primary_name = $.primary_name,
+            source = $.source,
+            force = $.force,
+            use_mock = $.use_mock
+        )
+        // `[…]` is load-bearing: a bare `got.result` assigns, so each
+        // iteration overwrites the last and the fan-out reports ONE result.
+        // Wrapped in a list, iterations concatenate.
+        yield RetrieveCountry(sets = [got.result])
+    }
+
+    /** Retrieve OSM power infrastructure for a set of countries.
+      *
+      * The equivalent of upstream's `rule retrieve_osm_all` / `rule all`. The
+      * two `foreach` levels are the two `expand()` dimensions; `concurrency`
+      * bounds the outer one (0 = unbounded).
+      *
+      * Defaults match `config/config.yaml` upstream, so the comparison starts
+      * from the same configuration rather than a friendlier one. */
+    workflow BuildGrid(
+        countries: Json,
+        features: Json,
+        out_dir: String,
+        primary_name: String = "power",
+        source: String = "geofabrik",
+        force: Boolean = false,
+        concurrency: Int = 2,
+        use_mock: Boolean = false
+    ) => (
+        sets: Json,
+        countries_done: Int
+    ) andThen foreach c in $.countries limit $.concurrency {
+        country = RetrieveCountry(
+            country = $.c,
+            features = $.features,
+            out_dir = $.out_dir,
+            primary_name = $.primary_name,
+            source = $.source,
+            force = $.force,
+            use_mock = $.use_mock
+        )
+        // `country.sets` is already a list, so this extends rather than
+        // nests — the workflow's `sets` is every (country, feature) pair.
+        yield BuildGrid(sets = country.sets, countries_done = 1)
+    }
+
+    /** Retrieve, then check the result is not empty.
+      *
+      * Kept separate from `BuildGrid` so the parity comparison stays honest:
+      * `BuildGrid` is what upstream implements, this is what a pipeline that
+      * has to trust its inputs would actually run. */
+    workflow BuildGridChecked(
+        countries: Json,
+        features: Json,
+        out_dir: String,
+        source: String = "geofabrik",
+        min_elements: Int = 1,
+        concurrency: Int = 2,
+        use_mock: Boolean = false
+    ) => (
+        sets: Json,
+        report: String
+    ) andThen {
+        built = BuildGrid(
+            countries = $.countries,
+            features = $.features,
+            out_dir = $.out_dir,
+            source = $.source,
+            concurrency = $.concurrency,
+            use_mock = $.use_mock
+        )
+
+        // A manifest of what the run produced, next to the data it describes.
+        // `fw.file.WriteJson` ships with the framework — no handler for it.
+        manifest = fw.file.WriteJson(
+            path = $.out_dir ++ "/manifest.json",
+            data = built.sets,
+            indent = 2
+        )
+
+        yield BuildGridChecked(sets = built.sets, report = manifest.path)
+    }
+}

@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fwh-gridbuilder"
+version = "0.1.0"
+description = "Power-grid models from OpenStreetMap — the Facetwork/FFL equivalent of PyPSA grid-builder"
+requires-python = ">=3.11"
+dependencies = [
+    "facetwork>=0.31.0",
+    "earth-osm>=3.0.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.entry-points."facetwork.domains"]
+gridbuilder = "gridbuilder:domain"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+gridbuilder = ["ffl/*.ffl"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
