@@ -29,7 +29,10 @@ def handle_retrieve(payload: dict[str, Any]) -> dict[str, Any]:
         force=bool(payload.get("force", False)),
         # Upstream exposes these four in config/config.yaml; the FFL defaults
         # match its defaults, so a comparison starts from the same settings.
-        mp=bool(payload.get("mp", True)),
+        # Default OFF: the runner is multi-threaded and earth-osm's mp forks.
+        # A fork from a thread-holding-a-lock deadlocks the child, and the
+        # parent then waits on it forever (seen on the fleet).
+        mp=bool(payload.get("mp", False)),
         stream_backend=bool(payload.get("stream_backend", True)),
         cache_primary=bool(payload.get("cache_primary", False)),
         target_date=(payload.get("target_date") or None),

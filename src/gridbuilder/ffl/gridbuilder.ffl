@@ -62,7 +62,14 @@ namespace grid.osm {
         primary_name: String = "power",
         source: String = "geofabrik",
         force: Boolean = false,
-        mp: Boolean = true,
+        // OFF by default under the runtime. earth-osm's multiprocessing FORKS,
+        // and forking a runner that holds logging/Mongo locks in other threads
+        // deadlocks the children — observed on the fleet as a task stuck
+        // "running" for 20+ minutes at 0.6% CPU with 19 live processes and no
+        // output. The CLI is single-threaded, so `retrieve_osm.py` still
+        // defaults it on; pass mp = true here only if you know the caller is not
+        // threaded.
+        mp: Boolean = false,
         stream_backend: Boolean = true,
         cache_primary: Boolean = false,
         target_date: String = "",
@@ -99,7 +106,16 @@ namespace grid.osm {
         use_mock: Boolean
     ) => (
         sets: Json
-    ) andThen foreach f in $.features {
+    )
+        // `limit 1` — the features of ONE country all read the SAME regional
+        // PBF out of earth-osm's shared cache. Run them concurrently and they
+        // race: one re-downloads the extract while another is reading it, and
+        // the loser dies with FileNotFoundError on a path that existed a
+        // moment ago (reproduced on the fleet: substation ok, line failed).
+        // The PBF is the contended resource, so the loop that shares it is the
+        // one that gets bounded — countries still fan out in parallel, since
+        // each pulls a different extract.
+        andThen foreach f in $.features limit 1 {
         got = Retrieve(
             country = $.country,
             feature = $.f,
