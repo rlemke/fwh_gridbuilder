@@ -109,10 +109,11 @@ namespace grid.osm {
             force = $.force,
             use_mock = $.use_mock
         )
-        // `[…]` is load-bearing: a bare `got.result` assigns, so each
-        // iteration overwrites the last and the fan-out reports ONE result.
-        // Wrapped in a list, iterations concatenate.
-        yield RetrieveCountry(sets = [got.result])
+        // `+=` aggregates across iterations. A bare `=` assigns, so each
+        // iteration would overwrite the last and the fan-out would report ONE
+        // result while every Retrieve still ran (the validator warns:
+        // YIELD_FOREACH_OVERWRITES). Order follows iteration, not completion.
+        yield RetrieveCountry(sets += got.result)
     }
 
     /** Retrieve OSM power infrastructure for a set of countries.
@@ -145,9 +146,9 @@ namespace grid.osm {
             force = $.force,
             use_mock = $.use_mock
         )
-        // `country.sets` is already a list, so this extends rather than
-        // nests — the workflow's `sets` is every (country, feature) pair.
-        yield BuildGrid(sets = country.sets, countries_done = 1)
+        // `country.sets` is already a list, so `+=` EXTENDS rather than nests
+        // — the workflow's `sets` is every (country, feature) pair.
+        yield BuildGrid(sets += country.sets, countries_done = 1)
     }
 
     /** Retrieve, then check the result is not empty.
