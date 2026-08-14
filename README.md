@@ -179,3 +179,38 @@ guarantee a line's endpoint is the same node as the substation it enters, so
 dangling; too loose and separate assets merge and the islands vanish. The
 default under-reports rather than inventing, and every finding records the
 tolerance it was judged at.
+
+### Multi-country sweep
+
+Eight countries, chosen small enough to retrieve on a modest connection
+(~110 MB of PBF in total):
+
+| country | lines | subs | findings | dangling | no voltage | dup | islands | in main network |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| Luxembourg | 627 | 832 | 283 | 79 | 117 | 57 | 32 | 86% |
+| Montenegro | 467 | 129 | 416 | 161 | 178 | 29 | 43 | 90% |
+| North Macedonia | 316 | 130 | 160 | 28 | 98 | 33 | 2 | 99% |
+| Cyprus | 209 | 158 | 100 | 22 | 64 | 8 | 7 | 97% |
+| Andorra | 26 | 8 | 21 | 6 | 13 | 0 | 3 | 92% |
+| Liechtenstein | 11 | 5 | 19 | 3 | 11 | 3 | 3 | 73% |
+| Malta | 7 | 226 | 10 | 5 | 0 | 1 | 5 | 43% |
+| Monaco | 0 | 2 | 1 | — | — | — | — | n/a |
+
+Findings per 100 lines ranges from 45 (Luxembourg) to 89 (Montenegro) among the
+countries with a real network — so extract quality varies by a factor of two
+between neighbours, which is the kind of thing a model built on "whatever OSM
+has" inherits silently.
+
+**Two results are about the method, not the data:**
+
+*Malta* shows 226 substations against 7 lines and 43% connectivity. Its
+transmission is largely underground, mapped as `power=cable`, and this sweep
+retrieved only `power=line`. The grid is not broken; the feature list was
+incomplete. Add `cable` to `features` for any country with a significant
+underground network before believing its connectivity number.
+
+*Monaco* returned 0 lines and originally audited **clean** — no lines, no
+findings, indistinguishable from a healthy grid. That is the silent-success
+failure this domain exists to avoid, so an empty extract is now a high-severity
+finding in its own right (`no_lines_in_extract`), and it names `power=cable` as
+a likely cause.

@@ -237,10 +237,14 @@ def test_findings_geojson_is_drawable():
     assert {"kind", "severity", "detail"} <= set(f["properties"])
 
 
-def test_an_empty_extract_audits_cleanly_rather_than_crashing():
-    """A country with no lines is a retrieval problem, not an audit crash."""
+def test_an_empty_extract_reports_rather_than_crashing_or_going_quiet():
+    """A country with no lines is a retrieval problem, not an audit crash —
+    and not a pass either. This test previously asserted `findings == []`,
+    which is what let Monaco report a clean grid with nothing in it.
+    """
     result = A.audit(fc([]), fc([]))
-    assert result["findings"] == [] and result["summary"]["lines"] == 0
+    assert result["summary"]["lines"] == 0
+    assert "no_lines_in_extract" in kinds(result)
 
 
 def test_a_line_teeing_into_another_mid_span_is_connected():
@@ -254,3 +258,20 @@ def test_a_line_teeing_into_another_mid_span_is_connected():
     result = A.audit(fc([trunk, branch]), fc(subs))
     assert "dangling_line_end" not in kinds(result)
     assert result["summary"]["islands"] == 1
+
+
+def test_an_extract_with_no_lines_is_a_finding_not_silence():
+    """Found by sweeping eight countries: Monaco returned 0 lines and the audit
+    reported 0 findings — indistinguishable from a healthy grid. An empty
+    extract is the loudest result available, not the quietest."""
+    result = A.audit(fc([]), fc([substation(7.42, 43.73)]))
+    assert "no_lines_in_extract" in kinds(result)
+    assert result["findings"][0]["severity"] == "high"
+    assert "power=cable" in result["findings"][0]["detail"], "must name the usual cause"
+
+
+def test_lines_without_any_substation_says_the_audit_is_unreliable():
+    """Every line reads as dangling, so the other counts mean little until
+    somebody explains the missing substations."""
+    result = A.audit(fc([line([[6.10, 49.60], [6.15, 49.62]], "l1")]), fc([]))
+    assert "no_substations_in_extract" in kinds(result)

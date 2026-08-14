@@ -224,6 +224,40 @@ def audit(
 
     findings: list[Finding] = []
 
+    # --- nothing to audit is not a clean bill of health --------------------
+    # Found by sweeping eight countries: Monaco returned 0 lines and the audit
+    # reported 0 findings, which reads exactly like a healthy grid. An empty
+    # extract is the loudest possible result, not the quietest.
+    if not lines:
+        c = _centroid((subs[0] or {}).get("geometry")) if subs else None
+        findings.append(
+            Finding(
+                kind="no_lines_in_extract",
+                severity="high",
+                detail=(
+                    f"no power lines at all ({len(subs)} substation(s) present) — either the "
+                    "extract failed, the region genuinely has none, or its network is mapped "
+                    "as power=cable rather than power=line and was not retrieved"
+                ),
+                lon=(c or (0.0, 0.0))[0],
+                lat=(c or (0.0, 0.0))[1],
+            )
+        )
+    if lines and not subs:
+        pt = line_ends_first = _line_ends(lines[0].get("geometry"))[0]
+        findings.append(
+            Finding(
+                kind="no_substations_in_extract",
+                severity="high",
+                detail=(
+                    f"{len(lines)} line(s) and no substations — every line will read as "
+                    "dangling, so the other findings are unreliable until this is explained"
+                ),
+                lon=pt[0],
+                lat=pt[1],
+            )
+        )
+
     # --- dangling ends: a line stops where nothing else is ------------------
     for idx, ends in enumerate(line_ends):
         for pt in ends:
