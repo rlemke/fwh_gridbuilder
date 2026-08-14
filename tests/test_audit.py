@@ -275,3 +275,65 @@ def test_lines_without_any_substation_says_the_audit_is_unreliable():
     somebody explains the missing substations."""
     result = A.audit(fc([line([[6.10, 49.60], [6.15, 49.62]], "l1")]), fc([]))
     assert "no_substations_in_extract" in kinds(result)
+
+
+def test_conductor_layers_merge_into_one_network(tmp_path):
+    """Overhead line + underground cable are ONE network. Auditing them
+    separately reports the join between them as two dangling ends — which is
+    what made Malta look 43% connected on a grid that is mostly cable."""
+    import json as _json
+
+    overhead = fc([line([[6.10, 49.60], [6.15, 49.62]], "oh")])
+    cable = fc([line([[6.15, 49.62], [6.20, 49.64]], "cb")])
+    subs = fc([substation(6.10, 49.60), substation(6.20, 49.64)])
+
+    (tmp_path / "X_line.geojson").write_text(_json.dumps(overhead))
+    (tmp_path / "X_cable.geojson").write_text(_json.dumps(cable))
+    (tmp_path / "X_substation.geojson").write_text(_json.dumps(subs))
+
+    separate = A.audit(overhead, subs)
+    assert "dangling_line_end" in kinds(separate), "the join reads as dangling alone"
+
+    merged = A.audit_paths(
+        [str(tmp_path / "X_line.geojson"), str(tmp_path / "X_cable.geojson")],
+        str(tmp_path / "X_substation.geojson"),
+    )
+    assert "dangling_line_end" not in kinds(merged)
+    assert merged["summary"]["lines"] == 2 and merged["summary"]["islands"] == 1
+
+
+def test_an_absent_optional_layer_is_skipped_not_fatal(tmp_path):
+    """Asking for `cable` in a country with none must not fail the audit."""
+    import json as _json
+
+    (tmp_path / "X_line.geojson").write_text(_json.dumps(fc([line([[6.1, 49.6], [6.15, 49.62]])])))
+    (tmp_path / "X_substation.geojson").write_text(_json.dumps(fc([substation(6.1, 49.6)])))
+    result = A.audit_paths(
+        [str(tmp_path / "X_line.geojson"), str(tmp_path / "X_cable.geojson")],
+        str(tmp_path / "X_substation.geojson"),
+    )
+    assert result["summary"]["lines"] == 1
+
+
+def test_a_single_missing_path_still_raises(tmp_path):
+    """One path that is not there is a caller error, not an absence."""
+    with pytest.raises(FileNotFoundError):
+        A.audit_paths(str(tmp_path / "nope.geojson"), str(tmp_path / "also_nope.geojson"))
+
+
+def test_substations_are_counted_by_class():
+    """A street-level transformer box is not a network node. Malta reports 226
+    substations of which 119 are `minor_distribution` and 5 `transmission` —
+    without the breakdown, that count describes mapping effort, not the grid."""
+    subs = [
+        {"type": "Feature", "properties": {"id": "a", "substation": "transmission"},
+         "geometry": {"type": "Point", "coordinates": [6.1, 49.6]}},
+        {"type": "Feature", "properties": {"id": "b", "substation": "minor_distribution"},
+         "geometry": {"type": "Point", "coordinates": [6.2, 49.6]}},
+        substation(6.3, 49.6, "c"),   # untagged
+    ]
+    result = A.audit(fc([]), fc(subs))
+    s = result["summary"]
+    assert s["transmission_substations"] == 1
+    assert s["substation_classes"]["minor_distribution"] == 1
+    assert s["substation_classes"]["unclassified"] == 1

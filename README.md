@@ -182,35 +182,44 @@ tolerance it was judged at.
 
 ### Multi-country sweep
 
-Eight countries, chosen small enough to retrieve on a modest connection
-(~110 MB of PBF in total):
+Eight countries, retrieving **`substation`, `line` and `cable`** — overhead
+lines and underground cables are one electrical network, so the audit merges
+the conductor layers before analysing connectivity.
 
-| country | lines | subs | findings | dangling | no voltage | dup | islands | in main network |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|
-| Luxembourg | 627 | 832 | 283 | 79 | 117 | 57 | 32 | 86% |
-| Montenegro | 467 | 129 | 416 | 161 | 178 | 29 | 43 | 90% |
-| North Macedonia | 316 | 130 | 160 | 28 | 98 | 33 | 2 | 99% |
-| Cyprus | 209 | 158 | 100 | 22 | 64 | 8 | 7 | 97% |
-| Andorra | 26 | 8 | 21 | 6 | 13 | 0 | 3 | 92% |
-| Liechtenstein | 11 | 5 | 19 | 3 | 11 | 3 | 3 | 73% |
-| Malta | 7 | 226 | 10 | 5 | 0 | 1 | 5 | 43% |
-| Monaco | 0 | 2 | 1 | — | — | — | — | n/a |
+| country | conductors | subs | of which transmission | findings | dangling | islands | in main network |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Luxembourg | 660 | 832 | 7 | 297 | 70 | 28 | 94% |
+| Montenegro | 471 | 129 | 3 | 419 | 160 | 43 | 90% |
+| North Macedonia | 318 | 130 | 3 | 162 | 28 | 2 | 99% |
+| Cyprus | 218 | 158 | 27 | 101 | 21 | 7 | 97% |
+| Andorra | 29 | 8 | 0 | 20 | 5 | 3 | 93% |
+| Malta | 23 | 226 | 5 | 11 | 4 | 7 | 57% |
+| Liechtenstein | 17 | 5 | 0 | 28 | 5 | 5 | 47% |
+| Monaco | 2 | 2 | 0 | 1 | 1 | 1 | 100% |
 
-Findings per 100 lines ranges from 45 (Luxembourg) to 89 (Montenegro) among the
-countries with a real network — so extract quality varies by a factor of two
-between neighbours, which is the kind of thing a model built on "whatever OSM
-has" inherits silently.
+**Adding `cable` changed the picture where it should.** Luxembourg went from
+86% to 94% connected and lost 9 dangling ends — those were overhead lines
+meeting underground cables that the line-only audit could not see. Monaco went
+from "no lines at all" to a 2-cable network.
 
-**Two results are about the method, not the data:**
+**It did not explain Malta, and the earlier README said it would.** That claim
+was a hypothesis stated as a cause, and checking it showed otherwise: Malta's
+226 substations are **119 `minor_distribution`, 24 `distribution` and just 5
+`transmission`**. The mapping effort went into street-level transformer boxes,
+not into the network joining them, so cables lifted connectivity only 43% → 57%.
+The summary now reports `substation_classes` and `transmission_substations`,
+because "226 substations" describes mapping effort rather than the grid.
 
-*Malta* shows 226 substations against 7 lines and 43% connectivity. Its
-transmission is largely underground, mapped as `power=cable`, and this sweep
-retrieved only `power=line`. The grid is not broken; the feature list was
-incomplete. Add `cable` to `features` for any country with a significant
-underground network before believing its connectivity number.
+**Liechtenstein got worse — 73% → 47%.** Adding six cables added a component
+that connects to nothing else. That is the honest behaviour: a new layer can
+lower connectivity when the new features are themselves disconnected, and at
+n=17 conductors these percentages are noise. Treat the small states as
+illustrations, not measurements.
 
-*Monaco* returned 0 lines and originally audited **clean** — no lines, no
-findings, indistinguishable from a healthy grid. That is the silent-success
-failure this domain exists to avoid, so an empty extract is now a high-severity
-finding in its own right (`no_lines_in_extract`), and it names `power=cable` as
-a likely cause.
+Findings per 100 conductors, among countries with a real network: 45
+(Luxembourg) to 89 (Montenegro).
+
+⚠️ Note what `transmission` count implies: Andorra, Liechtenstein and Monaco
+have **zero** substations tagged `substation=transmission`. An audit of those is
+an audit of distribution mapping, which is a different question from the one
+this domain asks.

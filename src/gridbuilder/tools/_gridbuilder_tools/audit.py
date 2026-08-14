@@ -407,9 +407,20 @@ def audit(
     for f in findings:
         counts[f.kind] += 1
 
+    # Not all substations are network nodes. OSM tags street-level transformer
+    # boxes `substation=minor_distribution`, and Malta has 119 of those against
+    # 5 transmission substations — so "226 substations" describes the mapping
+    # effort, not the grid, and a connectivity figure read without this is
+    # misleading.
+    classes: dict[str, int] = defaultdict(int)
+    for sub in subs:
+        classes[str(_prop(sub, "substation", "tags.substation") or "unclassified")] += 1
+
     summary = {
         "lines": len(lines),
         "substations": len(subs),
+        "substation_classes": dict(sorted(classes.items(), key=lambda kv: -kv[1])),
+        "transmission_substations": classes.get("transmission", 0),
         "findings": len(findings),
         "by_kind": dict(counts),
         "islands": len(components),
@@ -441,17 +452,58 @@ def findings_geojson(findings: list[dict]) -> dict:
     }
 
 
+def merge_collections(collections: list[dict]) -> dict:
+    """One FeatureCollection from several.
+
+    Overhead lines and underground cables are ONE electrical network — a cable
+    leaving a substation and an overhead line arriving at it are connected, and
+    auditing them separately reports both as dangling. Malta made this concrete:
+    226 substations against 7 `power=line` features and 43% connectivity, on a
+    grid that is mostly `power=cable` and not broken at all.
+    """
+    return {
+        "type": "FeatureCollection",
+        "features": [f for c in collections for f in (c.get("features") or [])],
+    }
+
+
 def audit_paths(
-    lines_path: str,
-    substations_path: str,
+    lines_path: str | list[str],
+    substations_path: str | list[str],
     *,
     tolerance_m: float = DEFAULT_TOLERANCE_M,
+    missing_ok: bool = True,
 ) -> dict[str, Any]:
-    """Audit two GeoJSON files, read through the storage backend."""
-    def _read(path: str) -> dict:
+    """Audit GeoJSON files, read through the storage backend.
+
+    Either argument may be a list — several conductor layers (line + cable) and
+    several substation layers merge into one network before analysis.
+
+    ``missing_ok`` skips a layer that is not there, because asking for `cable`
+    in a country that has none should not fail the audit; a single path that is
+    missing still raises, since that is a caller error rather than an absence.
+    """
+    def _read(path: str) -> dict | None:
         fs = _storage.get_storage(path)
         if not fs.exists(path):
-            raise FileNotFoundError(f"not found: {path}")
+            return None
         return json.loads(fs.read_text(path))
 
-    return audit(_read(lines_path), _read(substations_path), tolerance_m=tolerance_m)
+    def _load(paths: str | list[str], what: str) -> dict:
+        many = [paths] if isinstance(paths, str) else list(paths)
+        loaded = []
+        for path in many:
+            got = _read(path)
+            if got is None:
+                if len(many) == 1 or not missing_ok:
+                    raise FileNotFoundError(f"not found: {path}")
+                logger.info("%s layer absent, skipping: %s", what, path)
+                continue
+            loaded.append(got)
+        return merge_collections(loaded)
+
+    return audit(
+        _load(lines_path, "conductor"),
+        _load(substations_path, "substation"),
+        tolerance_m=tolerance_m,
+    )
