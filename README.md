@@ -119,3 +119,30 @@ pytest            # 25 tests, no network and no MongoDB (use_mock)
 
 Apache-2.0. Upstream `grid-builder` is MIT; OpenStreetMap data is
 [ODbL](https://opendatacommons.org/licenses/odbl/).
+
+## Maps
+
+`grid.osm.BuildMap` renders the retrieved layers as one self-contained HTML map
+(GeoJSON embedded, so it works from `file://`, from a bucket, or from the local
+gallery — only basemap tiles come from the network). Beyond upstream parity:
+grid-builder ships a map *image* in its README but has no rule that makes one.
+
+```bash
+fw ffl run --primary src/gridbuilder/ffl/gridbuilder.ffl \
+  --workflow grid.osm.BuildGridMap \
+  --inputs '{"countries": ["LU"], "features": ["substation", "line"],
+             "out_dir": "s3://afl-cache/gridbuilder/eu",
+             "map_dest": "s3://afl-cache/cache/gridbuilder/maps/luxembourg/index.html",
+             "title": "Luxembourg power grid (OpenStreetMap)"}'
+```
+
+To appear in the local gallery (`fw svc maps`, http://localhost:8090) the map
+must follow that server's layout — `<prefix>/<domain>/maps/<name>/index.html`,
+prefix `cache/` — which is what `map_dest` above does. Verified: 1,459 features
+(832 substations as 107 nodes + 725 areas, 627 lines) served at
+`/m/gridbuilder/maps/luxembourg/index.html`.
+
+**Publishing to the public gallery** (rlemke.github.io/facetwork-maps) goes
+through `census.Publish.PublishWebBundle`, which needs a `GITHUB_TOKEN`. That
+token is not on every host, so a map built here is browsable locally and
+published only from a host that holds it.

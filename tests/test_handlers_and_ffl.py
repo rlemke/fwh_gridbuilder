@@ -18,6 +18,7 @@ import pytest
 _SRC = Path(__file__).resolve().parents[1] / "src"
 sys.path.insert(0, str(_SRC))
 
+from gridbuilder.handlers.render import render_handlers  # noqa: E402
 from gridbuilder.handlers.retrieve import retrieve_handlers  # noqa: E402
 from gridbuilder.handlers.validate import validate_handlers  # noqa: E402
 
@@ -74,7 +75,7 @@ def test_validate_handler(tmp_path):
     assert out["ok"] is True and out["elements"] == 1
 
 
-@pytest.mark.parametrize("module", [retrieve_handlers, validate_handlers])
+@pytest.mark.parametrize("module", [retrieve_handlers, validate_handlers, render_handlers])
 def test_unknown_facet_is_a_clear_error(module):
     with pytest.raises(KeyError):
         module.handle({"_facet_name": "grid.osm.NotAFacet"})
@@ -88,7 +89,11 @@ def test_unknown_facet_is_a_clear_error(module):
 def test_every_declared_event_facet_has_a_handler():
     source = FFL_PATH.read_text()
     declared = {f"grid.osm.{m}" for m in re.findall(r"event facet\s+(\w+)\s*\(", source)}
-    handled = set(retrieve_handlers.facet_names()) | set(validate_handlers.facet_names())
+    handled = (
+        set(retrieve_handlers.facet_names())
+        | set(validate_handlers.facet_names())
+        | set(render_handlers.facet_names())
+    )
 
     assert declared, "no event facets parsed from the FFL"
     assert declared == handled, (

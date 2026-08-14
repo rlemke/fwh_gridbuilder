@@ -10,8 +10,10 @@ def register_all_registry_handlers(runner) -> None:
     Imports are deferred so concurrent module loads from the runner do not
     deadlock on the import lock.
     """
+    from .render.render_handlers import register_handlers as reg_render
     from .retrieve.retrieve_handlers import register_handlers as reg_retrieve
     from .validate.validate_handlers import register_handlers as reg_validate
 
     reg_retrieve(runner)
     reg_validate(runner)
+    reg_render(runner)

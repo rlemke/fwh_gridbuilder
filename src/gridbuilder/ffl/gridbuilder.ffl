@@ -95,6 +95,26 @@ namespace grid.osm {
         detail: String
     ) with Effect(kind = "io") with Cost(tier = "cheap")
 
+    /** Render retrieved layers as one self-contained HTML map.
+      *
+      * BEYOND UPSTREAM PARITY — grid-builder ships a map image in its README
+      * but has no rule that makes one; its output is model-ready CSV/GeoJSON
+      * for PyPSA-Eur. This exists because looking at a grid extract catches
+      * what a row count cannot: substations clustered on one junction, lines
+      * that stop at an old border, an extract of the wrong region.
+      *
+      * The GeoJSON is embedded in the page, so the file works from `file://`,
+      * from the local gallery, and from an object store — `dest` may be a
+      * local path or `s3://`. */
+    event facet BuildMap(
+        geojson_paths: Json,
+        dest: String,
+        title: String = "OpenStreetMap power grid"
+    ) => (
+        path: String,
+        features: Int
+    ) with Effect(kind = "io") with Cost(tier = "cheap")
+
     /** Every feature for one country — the inner `expand()` over features. */
     facet RetrieveCountry(
         country: String,
@@ -165,6 +185,47 @@ namespace grid.osm {
         // `country.sets` is already a list, so `+=` EXTENDS rather than nests
         // — the workflow's `sets` is every (country, feature) pair.
         yield BuildGrid(sets += country.sets, countries_done = 1)
+    }
+
+    /** Retrieve a grid and draw it.
+      *
+      * The fan-out returns every (country, feature) set, and `BuildMap` takes
+      * the GeoJSON paths straight from it — no second enumeration of the
+      * output directory, so the map shows exactly what THIS run produced
+      * rather than whatever else happens to be sitting in the bucket. */
+    workflow BuildGridMap(
+        countries: Json,
+        features: Json,
+        out_dir: String,
+        source: String = "geofabrik",
+        concurrency: Int = 2,
+        use_mock: Boolean = false,
+        title: String = "OpenStreetMap power grid",
+        map_dest: String = "map.html"
+    ) => (
+        map: String,
+        features_drawn: Int
+    ) andThen {
+        built = BuildGrid(
+            countries = $.countries,
+            features = $.features,
+            out_dir = $.out_dir,
+            source = $.source,
+            concurrency = $.concurrency,
+            use_mock = $.use_mock
+        )
+
+        // `map_dest` defaults to sitting beside the data, which is right for
+        // `file://` and for browsing a bucket. To make it appear in the local
+        // gallery (`fw svc maps`) it must follow that server's layout instead:
+        //   s3://<bucket>/cache/gridbuilder/maps/<name>/index.html
+        drawn = BuildMap(
+            geojson_paths = built.sets,
+            dest = $.map_dest,
+            title = $.title
+        )
+
+        yield BuildGridMap(map = drawn.path, features_drawn = drawn.features)
     }
 
     /** Retrieve, then check the result is not empty.

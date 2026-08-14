@@ -14,6 +14,6 @@ _TOOLS_ROOT = Path(__file__).resolve().parents[2] / "tools"
 if str(_TOOLS_ROOT) not in sys.path:
     sys.path.insert(0, str(_TOOLS_ROOT))
 
-from _gridbuilder_tools import retrieve, validate  # noqa: E402
+from _gridbuilder_tools import render, retrieve, validate  # noqa: E402
 
-__all__ = ["retrieve", "validate"]
+__all__ = ["render", "retrieve", "validate"]

@@ -21,6 +21,7 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src" / "gridbuilder" / "tools"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from _gridbuilder_tools import retrieve, validate  # noqa: E402
 
@@ -165,3 +166,75 @@ def test_validate_rejects_an_empty_extract_with_an_actionable_message(tmp_path):
 
 def test_validate_honours_a_higher_threshold(extract):
     assert validate.validate_extract(extract.csv_path, min_elements=99).ok is False
+
+
+# ---------------------------------------------------------------------------
+# Map rendering (beyond upstream parity)
+# ---------------------------------------------------------------------------
+
+
+def test_the_map_embeds_its_data_and_draws_every_layer(tmp_path):
+    """Embedded, not fetched: the file has to work from file://, from the local
+    gallery and from an object store, without CORS or a second request."""
+    from _gridbuilder_tools import render
+
+    a = retrieve.retrieve_feature("BE", "substation", str(tmp_path), use_mock=True)
+    b = retrieve.retrieve_feature("BE", "line", str(tmp_path), use_mock=True)
+
+    dest, total = render.build_map([a.geojson_path, b.geojson_path], str(tmp_path / "index.html"))
+    html = Path(dest).read_text()
+
+    assert total == 5, "3 substations + 2 lines"
+    assert "BE-substation-0" in html, "feature data is not embedded in the page"
+    assert "Substations — BE" in html and "Transmission lines — BE" in html
+    assert html.count("<script") >= 2 and html.strip().endswith("</html>")
+
+
+def test_an_unreadable_layer_is_skipped_not_fatal(tmp_path):
+    """A map of three layers out of four is still worth looking at, and the
+    legend count shows what actually arrived."""
+    from _gridbuilder_tools import render
+
+    good = retrieve.retrieve_feature("LU", "substation", str(tmp_path), use_mock=True)
+    broken = tmp_path / "LU_line.geojson"
+    broken.write_text("{ not geojson")
+
+    _, total = render.build_map(
+        [good.geojson_path, str(broken), str(tmp_path / "absent.geojson")],
+        str(tmp_path / "m.html"),
+    )
+    assert total == 1
+
+
+def test_a_map_with_no_readable_layers_refuses(tmp_path):
+    """An empty map is indistinguishable from a working one that found
+    nothing — this domain's quietest failure."""
+    from _gridbuilder_tools import render
+
+    with pytest.raises(ValueError, match="nothing to draw"):
+        render.build_map([str(tmp_path / "nope.geojson")], str(tmp_path / "m.html"))
+
+
+def test_the_handler_accepts_the_fan_outs_FeatureSet_values(tmp_path):
+    """`BuildGridMap` passes `built.sets` straight through, so the common input
+    is FeatureSet dicts rather than bare paths."""
+    from gridbuilder.handlers.render import render_handlers
+
+    got = retrieve.retrieve_feature("BE", "substation", str(tmp_path), use_mock=True)
+    out = render_handlers.handle({
+        "_facet_name": "grid.osm.BuildMap",
+        "geojson_paths": [got.as_dict()],
+        "dest": str(tmp_path / "index.html"),
+    })
+    assert out["features"] == 3 and Path(out["path"]).is_file()
+
+
+def test_the_handler_rejects_input_it_cannot_read_paths_from(tmp_path):
+    from gridbuilder.handlers.render import render_handlers
+
+    with pytest.raises(ValueError, match="cannot read a GeoJSON path"):
+        render_handlers.handle({
+            "_facet_name": "grid.osm.BuildMap",
+            "geojson_paths": [{"no_path_here": 1}],
+            "dest": str(tmp_path / "x.html"),
+        })
