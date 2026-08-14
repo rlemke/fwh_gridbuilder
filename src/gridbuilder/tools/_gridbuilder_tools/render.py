@@ -30,6 +30,7 @@ _STYLE = {
     "line": {"colour": "#2e86ab", "label": "Transmission lines"},
     "cable": {"colour": "#7d5ba6", "label": "Cables"},
     "generator": {"colour": "#f5a623", "label": "Generators"},
+    "findings": {"colour": "#111111", "label": "Audit findings"},
 }
 _FALLBACK = {"colour": "#555555", "label": "Other"}
 

@@ -1,0 +1,59 @@
+/** Quality and gap audit for an OSM transmission-grid extract.
+  *
+  * BEYOND UPSTREAM PARITY — PyPSA `grid-builder`'s README lists "validate
+  * network model" as a stage; it is not implemented, and neither project has
+  * built it. This is that stage, at the level that needs no power-flow solve.
+  *
+  * An extract can be complete, well-formed and still unusable as a network:
+  * lines that stop in a field, voltages nobody tagged, circuits mapped twice,
+  * a region that is electrically an island because one connector is missing.
+  * A row count shows none of it — `grid.osm.ValidateRetrieval` says 627 lines
+  * arrived and is right, and the network is still broken.
+  *
+  * Everything here is graph and geometry over what `grid.osm.Retrieve` already
+  * produced, so an audit costs no downloads and fans out per country.
+  *
+  * ⚠️ `tolerance_m` is the load-bearing parameter. OSM does not guarantee a
+  * line's endpoint is the same node as the substation it enters, so "connected"
+  * means "within tolerance". Too tight and every junction looks dangling; too
+  * loose and separate assets merge and the islands vanish. Every finding
+  * records the tolerance it was judged at. */
+namespace grid.audit {
+    use fw.file
+
+    /** Audit one country's lines against its substations. */
+    event facet AuditGrid(
+        lines_path: String,
+        substations_path: String,
+        out_dir: String,
+        country: String = "",
+        tolerance_m: Double = 120.0
+    ) => (
+        findings: Json,
+        summary: Json,
+        findings_path: String,
+        report_path: String
+    ) with Effect(kind = "io") with Cost(tier = "cheap")
+
+    /** Audit a country and draw the findings over the grid they describe.
+      *
+      * The map is the point of the ranked output: 79 dangling ends is a number,
+      * whereas 79 dots clustered along one corridor is a diagnosis. */
+    workflow AuditCountry(
+        out_dir: String,
+        country: String,
+        tolerance_m: Double = 120.0
+    ) => (
+        summary: Json,
+        report: String
+    ) andThen {
+        audited = AuditGrid(
+            lines_path = $.out_dir ++ "/" ++ $.country ++ "_line.geojson",
+            substations_path = $.out_dir ++ "/" ++ $.country ++ "_substation.geojson",
+            out_dir = $.out_dir,
+            country = $.country,
+            tolerance_m = $.tolerance_m
+        )
+        yield AuditCountry(summary = audited.summary, report = audited.report_path)
+    }
+}

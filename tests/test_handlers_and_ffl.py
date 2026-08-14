@@ -18,11 +18,13 @@ import pytest
 _SRC = Path(__file__).resolve().parents[1] / "src"
 sys.path.insert(0, str(_SRC))
 
+from gridbuilder.handlers.audit import audit_handlers  # noqa: E402
 from gridbuilder.handlers.render import render_handlers  # noqa: E402
 from gridbuilder.handlers.retrieve import retrieve_handlers  # noqa: E402
 from gridbuilder.handlers.validate import validate_handlers  # noqa: E402
 
 FFL_PATH = _SRC / "gridbuilder" / "ffl" / "gridbuilder.ffl"
+AUDIT_FFL = _SRC / "gridbuilder" / "ffl" / "audit.ffl"
 
 
 # ---------------------------------------------------------------------------
@@ -75,7 +77,9 @@ def test_validate_handler(tmp_path):
     assert out["ok"] is True and out["elements"] == 1
 
 
-@pytest.mark.parametrize("module", [retrieve_handlers, validate_handlers, render_handlers])
+@pytest.mark.parametrize(
+    "module", [retrieve_handlers, validate_handlers, render_handlers, audit_handlers]
+)
 def test_unknown_facet_is_a_clear_error(module):
     with pytest.raises(KeyError):
         module.handle({"_facet_name": "grid.osm.NotAFacet"})
@@ -87,12 +91,18 @@ def test_unknown_facet_is_a_clear_error(module):
 
 
 def test_every_declared_event_facet_has_a_handler():
-    source = FFL_PATH.read_text()
-    declared = {f"grid.osm.{m}" for m in re.findall(r"event facet\s+(\w+)\s*\(", source)}
+    declared = {
+        f"grid.osm.{m}"
+        for m in re.findall(r"event facet\s+(\w+)\s*\(", FFL_PATH.read_text())
+    } | {
+        f"grid.audit.{m}"
+        for m in re.findall(r"event facet\s+(\w+)\s*\(", AUDIT_FFL.read_text())
+    }
     handled = (
         set(retrieve_handlers.facet_names())
         | set(validate_handlers.facet_names())
         | set(render_handlers.facet_names())
+        | set(audit_handlers.facet_names())
     )
 
     assert declared, "no event facets parsed from the FFL"
@@ -100,6 +110,14 @@ def test_every_declared_event_facet_has_a_handler():
         f"declared without a handler: {sorted(declared - handled)}; "
         f"handled but not declared: {sorted(handled - declared)}"
     )
+
+
+def test_the_audit_ffl_compiles():
+    from facetwork import parse
+    from facetwork.validator import validate as validate_ffl
+
+    result = validate_ffl(parse(AUDIT_FFL.read_text()))
+    assert result.is_valid, "; ".join(e.message for e in result.errors)
 
 
 def test_the_ffl_compiles():

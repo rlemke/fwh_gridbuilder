@@ -146,3 +146,36 @@ prefix `cache/` — which is what `map_dest` above does. Verified: 1,459 feature
 through `census.Publish.PublishWebBundle`, which needs a `GITHUB_TOKEN`. That
 token is not on every host, so a map built here is browsable locally and
 published only from a host that holds it.
+
+## Quality and gap audit
+
+`grid.audit.AuditGrid` answers a question the row count cannot: is this extract
+usable as a *network*? Upstream lists "validate network model" as a stage; it is
+not implemented, and this is that stage at the level that needs no power-flow
+solve — graph and geometry over what retrieval already produced, so an audit
+costs no downloads and fans out per country.
+
+It reports, ranked worst-first:
+
+| finding | why it matters |
+|---|---|
+| `dangling_line_end` | a line stops with no other line and no substation nearby — power cannot flow past it |
+| `implausible_voltage_transition` | two voltages meet outside a substation: a transformer is missing, or a tag is wrong |
+| `grid_island` | lines connected to nothing else — an island, or the extract is missing the connector |
+| `missing_voltage` | no usable voltage tag, so the line cannot be assigned a network layer |
+| `duplicate_circuit` | same endpoints, near-identical length — double-mapped, or parallel circuits worth confirming |
+
+**On Luxembourg** (627 lines, 832 substations): 283 findings — 79 dangling ends,
+117 without voltage, 57 duplicate circuits, 28 small islands, 2 implausible
+voltage transitions. 541 of 627 lines (86%) form one connected network. The two
+voltage findings cite real ways (110751689 at 65 kV meeting 220 kV) and are
+checkable on openstreetmap.org.
+
+Map: https://rlemke.github.io/facetwork-maps/grid/luxembourg-audit/
+
+⚠️ **`tolerance_m` (default 120 m) is the load-bearing parameter.** OSM does not
+guarantee a line's endpoint is the same node as the substation it enters, so
+"connected" means "within tolerance". Too tight and every junction looks
+dangling; too loose and separate assets merge and the islands vanish. The
+default under-reports rather than inventing, and every finding records the
+tolerance it was judged at.
