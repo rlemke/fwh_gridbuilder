@@ -22,7 +22,6 @@ from __future__ import annotations
 import abc
 import json
 import logging
-import os
 import shutil
 from pathlib import Path
 from urllib.parse import urlparse
@@ -90,21 +89,17 @@ class S3Storage(Storage):
     """
 
     def __init__(self) -> None:
+        # ⚠️ The runtime's single S3 client construction — one credential chain
+        # and one MinIO config (s3v4 + path-style) for the whole codebase. This
+        # module's own client omitted that config and worked only because boto3
+        # happens to choose path-style for a custom endpoint_url.
         try:
-            import boto3
+            from facetwork.runtime.storage import s3_client
         except ImportError as exc:  # pragma: no cover - environment-dependent
             raise RuntimeError(
                 "s3:// output needs boto3 — install the package's [s3] extra"
             ) from exc
-        self._client = boto3.client(
-            "s3",
-            endpoint_url=os.environ.get("FW_S3_ENDPOINT") or None,
-            region_name=os.environ.get("FW_S3_REGION", "us-east-1"),
-            aws_access_key_id=os.environ.get("FW_S3_ACCESS_KEY")
-            or os.environ.get("AWS_ACCESS_KEY_ID"),
-            aws_secret_access_key=os.environ.get("FW_S3_SECRET_KEY")
-            or os.environ.get("AWS_SECRET_ACCESS_KEY"),
-        )
+        self._client = s3_client()
 
     @staticmethod
     def _split(path: str) -> tuple[str, str]:
