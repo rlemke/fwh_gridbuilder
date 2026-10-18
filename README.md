@@ -246,13 +246,13 @@ the conductor layers before analysing connectivity.
 
 | country | conductors | subs | of which transmission | findings | dangling | islands | in main network |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| Luxembourg | 660 | 832 | 7 | 297 | 70 | 28 | 94% |
-| Montenegro | 471 | 129 | 3 | 419 | 160 | 43 | 90% |
-| North Macedonia | 318 | 130 | 3 | 162 | 28 | 2 | 99% |
-| Cyprus | 218 | 158 | 27 | 101 | 21 | 7 | 97% |
-| Andorra | 29 | 8 | 0 | 20 | 5 | 3 | 93% |
+| Luxembourg | 660 | 832 | 7 | 279 | 70 | 28 | 94% |
+| Montenegro | 471 | 129 | 3 | 416 | 160 | 43 | 90% |
+| North Macedonia | 318 | 130 | 3 | 115 | 28 | 2 | 99% |
+| Cyprus | 218 | 158 | 27 | 100 | 21 | 7 | 97% |
+| Andorra | 29 | 8 | 0 | 19 | 5 | 3 | 93% |
 | Malta | 23 | 226 | 5 | 11 | 4 | 7 | 57% |
-| Liechtenstein | 17 | 5 | 0 | 28 | 5 | 5 | 47% |
+| Liechtenstein | 17 | 5 | 0 | 27 | 5 | 5 | 47% |
 | Monaco | 2 | 2 | 0 | 1 | 1 | 1 | 100% |
 
 **Adding `cable` changed the picture where it should.** Luxembourg went from
@@ -274,8 +274,16 @@ lower connectivity when the new features are themselves disconnected, and at
 n=17 conductors these percentages are noise. Treat the small states as
 illustrations, not measurements.
 
-Findings per 100 conductors, among countries with a real network: 45
-(Luxembourg) to 89 (Montenegro).
+Findings per 100 conductors, among countries with a real network: 36
+(North Macedonia) to 88 (Montenegro).
+
+⚠️ **This table was re-run on 2026-10-18 after a parser fix**, on the same
+2026-08-23 extracts. `parse_voltage` read a FLOAT voltage by its digits, so
+`69000.0` became 690 kV. A layer arrives as floats whenever every voltage in it
+is a plain number (North Macedonia's lines, Luxembourg's cables) and as strings
+when any value is not (`"220000;65000"`), so the bug hit some layers of some
+countries: North Macedonia lost 47 findings, Luxembourg 18. The line-only
+Luxembourg figures above read string voltages and were not affected.
 
 ⚠️ Note what `transmission` count implies: Andorra, Liechtenstein and Monaco
 have **zero** substations tagged `substation=transmission`. An audit of those is

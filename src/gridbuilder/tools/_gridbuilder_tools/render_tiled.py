@@ -59,10 +59,14 @@ def voltage_kv(props: dict) -> int | None:
 
 
 def minzoom_for(layer: str, kv: int | None) -> int:
-    """The zoom a feature first appears at. Unknown voltage is treated as low."""
+    """The zoom a feature first appears at. Unknown voltage is treated as low.
+
+    Never deeper than ``MIN_MAXZOOM``: a tileset retiled down to that zoom must
+    still contain every feature (tippecanoe silently drops one whose minzoom is
+    past the maxzoom it builds)."""
     kv = kv or 0
     if layer == "substation":
-        return 3 if kv >= 220 else 5 if kv >= 110 else 7 if kv >= 33 else 9
+        return 3 if kv >= 220 else 5 if kv >= 110 else 7 if kv >= 33 else MIN_MAXZOOM
     return 0 if kv >= 220 else 3 if kv >= 110 else 5 if kv >= 33 else 8
 
 

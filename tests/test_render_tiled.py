@@ -20,6 +20,10 @@ def test_backbone_appears_before_distribution():
     assert rt.minzoom_for("line", 380) == 0
     assert rt.minzoom_for("line", 110) < rt.minzoom_for("line", 33) < rt.minzoom_for("line", 11)
     assert rt.minzoom_for("line", None) == rt.minzoom_for("line", 0)  # unknown = low
+    # Every feature must survive the shallowest retile.
+    for layer in rt.LAYERS:
+        for kv in (None, 0, 11, 33, 110, 220, 380):
+            assert rt.minzoom_for(layer, kv) <= rt.MIN_MAXZOOM
 
 
 def test_slim_feature_drops_refs_and_converts_float_voltage():
