@@ -337,3 +337,15 @@ def test_substations_are_counted_by_class():
     assert s["transmission_substations"] == 1
     assert s["substation_classes"]["minor_distribution"] == 1
     assert s["substation_classes"]["unclassified"] == 1
+
+
+def test_parse_voltage_reads_earth_osm_floats():
+    # earth_osm writes an all-numeric voltage column as FLOAT. Concatenating the
+    # digits of "69000.0" read 690 kV, and "220000.0" overflowed the plausibility
+    # cap to None — Luxembourg's audit reported 13 voltage transitions, 10 false.
+    assert A.parse_voltage(69000.0) == 69000
+    assert A.parse_voltage("69000.0") == 69000
+    assert A.parse_voltage(220000.0) == 220000
+    assert A.parse_voltage(float("nan")) is None
+    assert A.parse_voltage("380000;110000") == 380000
+    assert A.parse_voltage("380 kV") == 380000

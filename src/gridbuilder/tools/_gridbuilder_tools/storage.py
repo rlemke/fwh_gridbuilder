@@ -48,6 +48,16 @@ class Storage(abc.ABC):
     def write_text(self, path: str, text: str) -> None: ...
 
     @abc.abstractmethod
+    def fetch_to_local(self, path: str, local_path: str) -> None: ...
+
+    @abc.abstractmethod
+    def identity(self, path: str) -> str:
+        """Cheap identity of an object: what changes when its content does.
+
+        Not a content hash — hashing a 40 GB continent costs as much as reading
+        it, which is the work a cache check exists to avoid."""
+
+    @abc.abstractmethod
     def finalize_from_local(self, local_path: str, dest: str) -> None:
         """Move a staged local file to its final home."""
 
@@ -69,6 +79,13 @@ class LocalStorage(Storage):
 
     def read_text(self, path: str) -> str:
         return Path(path).read_text(encoding="utf-8", errors="replace")
+
+    def fetch_to_local(self, path: str, local_path: str) -> None:
+        shutil.copyfile(path, local_path)
+
+    def identity(self, path: str) -> str:
+        st = Path(path).stat()
+        return f"size={st.st_size};mtime_ns={st.st_mtime_ns}"
 
     def write_text(self, path: str, text: str) -> None:
         p = Path(path)
@@ -134,6 +151,16 @@ class S3Storage(Storage):
     def write_text(self, path: str, text: str) -> None:
         bucket, key = self._split(path)
         self._client.put_object(Bucket=bucket, Key=key, Body=text.encode("utf-8"))
+
+    def fetch_to_local(self, path: str, local_path: str) -> None:
+        # Managed transfer, streamed to disk — never buffered in memory.
+        bucket, key = self._split(path)
+        self._client.download_file(bucket, key, str(local_path))
+
+    def identity(self, path: str) -> str:
+        bucket, key = self._split(path)
+        head = self._client.head_object(Bucket=bucket, Key=key)
+        return f"size={head['ContentLength']};etag={head.get('ETag', '').strip(chr(34))}"
 
     def finalize_from_local(self, local_path: str, dest: str) -> None:
         bucket, key = self._split(dest)

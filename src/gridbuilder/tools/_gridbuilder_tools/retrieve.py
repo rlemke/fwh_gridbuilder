@@ -53,7 +53,7 @@ SIDECAR_SUFFIX = ".meta.json"
 #: configuration rather than a friendlier one.
 DEFAULT_PRIMARY = "power"
 DEFAULT_FEATURES = ("substation", "line")
-VALID_SOURCES = ("geofabrik", "overpass")
+VALID_SOURCES = ("geofabrik", "overpass", "pbf")
 
 
 @dataclass(frozen=True)
@@ -128,6 +128,7 @@ def is_current(
     primary_name: str,
     source: str,
     target_date: str | None = None,
+    pbf_identity: str | None = None,
 ) -> tuple[bool, str]:
     """Whether the cached extraction may be reused, and why not if not.
 
@@ -167,6 +168,8 @@ def is_current(
         # way of fetching the same data — so it belongs in the identity check
         # alongside the country and feature.
         ("target_date", target_date),
+        # source="pbf": the caller's file IS the input, so its identity is.
+        ("pbf_identity", pbf_identity),
     ):
         if side.get(key) != want:
             return False, f"{key} was {side.get(key)!r}, now {want!r}"
@@ -183,6 +186,8 @@ def write_sidecar(
     elements: int,
     generated_at: str,
     target_date: str | None = None,
+    pbf: str | None = None,
+    pbf_identity: str | None = None,
 ) -> None:
     """Record what produced this artifact. Written LAST, after the data."""
     fs = _storage.get_storage(csv_path)
@@ -192,6 +197,8 @@ def write_sidecar(
         "primary_name": primary_name,
         "source": source,
         "target_date": target_date,
+        "pbf": pbf,
+        "pbf_identity": pbf_identity,
         "elements": elements,
         "size_bytes": fs.size(csv_path),
         "generated_at": generated_at,
@@ -261,6 +268,7 @@ def retrieve_feature(
     target_date: str | None = None,
     data_dir: str | None = None,
     use_mock: bool = False,
+    pbf: str | None = None,
 ) -> FeatureSet:
     """Retrieve one OSM power feature for one country.
 
@@ -268,8 +276,16 @@ def retrieve_feature(
     extraction was skipped because the recorded provenance still matched — which
     is a claim about identity, not about mtime.
     """
+    if pbf:
+        # A supplied PBF fixes the input; earth_osm is pointed at it and never
+        # downloads. `country` is then the earth_osm REGION id the file stands
+        # for (``europe``, ``LU``) — it names the outputs, nothing more.
+        source = "pbf"
     if source not in VALID_SOURCES:
         raise ValueError(f"source must be one of {VALID_SOURCES}, got {source!r}")
+    if source == "pbf" and not pbf:
+        raise ValueError("source='pbf' needs a pbf path or s3:// URI")
+    pbf_identity = _storage.get_storage(pbf).identity(pbf) if pbf and not use_mock else None
 
     fs = _storage.get_storage(out_dir)
     fs.mkdir_p(out_dir)
@@ -285,6 +301,7 @@ def retrieve_feature(
             primary_name=primary_name,
             source=source,
             target_date=target_date,
+            pbf_identity=pbf_identity,
         )
         if current:
             logger.info("%s/%s: reusing cached extract (%s)", country, feature, why)
@@ -316,6 +333,7 @@ def retrieve_feature(
             stream_backend=stream_backend,
             cache_primary=cache_primary,
             target_date=target_date,
+            pbf=pbf,
         )
 
     elements = count_rows(csv_path)
@@ -328,6 +346,8 @@ def retrieve_feature(
         elements=elements,
         generated_at=_utc_now(),
         target_date=target_date,
+        pbf=pbf,
+        pbf_identity=pbf_identity,
     )
     logger.info("%s/%s: %d element(s) → %s", country, feature, elements, csv_path)
     return FeatureSet(
@@ -374,6 +394,7 @@ def _run_earth_osm(
     stream_backend: bool = True,
     cache_primary: bool = False,
     target_date: str | None = None,
+    pbf: str | None = None,
 ) -> None:
     """Call earth_osm and move its output to upstream's flat naming.
 
@@ -388,14 +409,28 @@ def _run_earth_osm(
     with tempfile.TemporaryDirectory(prefix="gridbuilder-") as tmp:
         staging = Path(tmp) / "out"
         staging.mkdir(parents=True, exist_ok=True)
+        eo_data_dir = data_dir or os.environ.get("FW_GRIDBUILDER_DATA_DIR") or str(
+            Path.home() / ".cache" / "earth-osm"
+        )
+        if pbf:
+            # A private data dir per call: the seeded file must not replace a
+            # genuine Geofabrik download of the same region in the shared cache,
+            # nor be replaced by one mid-read.
+            from _gridbuilder_tools import prefilter as _prefilter
+
+            local_pbf = Path(tmp) / "input.osm.pbf"
+            _storage.get_storage(pbf).fetch_to_local(pbf, str(local_pbf))
+            eo_data_dir = str(Path(tmp) / "eo-data")
+            _prefilter.seed_earth_osm(country, str(local_pbf), eo_data_dir)
+            local_pbf.unlink()
+            source, force, target_date = "geofabrik", False, None  # seeded: never fetch
         eo.save_osm_data(
             primary_name=primary_name,
             region_list=[country],
             feature_list=[feature],
             data_source=source,
             out_dir=str(staging),
-            data_dir=data_dir or os.environ.get("FW_GRIDBUILDER_DATA_DIR")
-            or str(Path.home() / ".cache" / "earth-osm"),
+            data_dir=eo_data_dir,
             out_format=["csv", "geojson"],
             out_aggregate=False,
             # `force` has to reach BOTH layers. Skipping only this package's

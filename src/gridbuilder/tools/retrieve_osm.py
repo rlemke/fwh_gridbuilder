@@ -9,6 +9,8 @@ Usage:
   retrieve_osm.py --countries BE --features substation line --out-dir out/
   retrieve_osm.py --countries BE LU --source overpass --force
   retrieve_osm.py --countries BE --use-mock --out-dir /tmp/x   # offline
+  retrieve_osm.py --countries europe --pbf s3://osm-extracts/europe-latest.osm.pbf \
+      --prefilter --features substation line cable --out-dir out/   # no Geofabrik
 
 stdout: one JSON object per extraction (pipeable).
 stderr: progress and errors.
@@ -24,7 +26,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from _gridbuilder_tools import retrieve  # noqa: E402
+from _gridbuilder_tools import prefilter, retrieve  # noqa: E402
 
 logger = logging.getLogger("retrieve_osm")
 
@@ -43,10 +45,22 @@ def main() -> int:
     ap.add_argument("--cache-primary", action="store_true", help="cache primary feature data")
     ap.add_argument("--target-date", default=None, help="historical snapshot, ISO 8601")
     ap.add_argument("--use-mock", action="store_true", help="offline deterministic extracts")
+    ap.add_argument("--pbf", default=None,
+                    help="extract from this PBF (path or s3://) instead of downloading; "
+                         "--countries then names the earth_osm region it stands for")
+    ap.add_argument("--prefilter", action="store_true",
+                    help="with --pbf: osmium-filter it to the primary key first (same rows, far faster)")
     ap.add_argument("--log-level", default="INFO")
     args = ap.parse_args()
 
     logging.basicConfig(level=args.log_level, stream=sys.stderr, format="%(levelname)s %(message)s")
+
+    if args.pbf and len(args.countries) != 1:
+        ap.error("--pbf stands for exactly one region; pass one --countries value")
+    pbf = args.pbf
+    if pbf and args.prefilter:
+        pbf = prefilter.prefilter(pbf, retrieve._storage.Storage.join(args.out_dir, "_prefiltered"),
+                                  primary_name=args.primary_name, force=args.force).filtered
 
     failures = 0
     for country in args.countries:
@@ -64,6 +78,7 @@ def main() -> int:
                     cache_primary=args.cache_primary,
                     target_date=args.target_date,
                     use_mock=args.use_mock,
+                    pbf=pbf,
                 )
             except Exception as exc:  # noqa: BLE001 — one bad pair must not stop the rest
                 logger.error("%s/%s failed: %s", country, feature, exc)

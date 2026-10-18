@@ -24,6 +24,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import re
 from collections import defaultdict
 from dataclasses import asdict, dataclass, field
 from typing import Any
@@ -137,22 +138,33 @@ def _length_m(geom: dict) -> float:
 def parse_voltage(value: Any) -> int | None:
     """Highest voltage in an OSM `voltage` tag, or None.
 
-    OSM writes `380000`, `380000;110000`, `"380 kV"`, or nothing. The maximum
-    is the right reading for "what class of line is this".
+    OSM writes `380000`, `380000;110000`, `"380 kV"`, or nothing — and
+    earth_osm's GeoJSON carries it as a FLOAT (`69000.0`) when pandas has seen a
+    missing value in the column. Concatenating every digit read that as 690 kV,
+    so each part is parsed as a number, decimals included. The maximum is the
+    right reading for "what class of line is this".
     """
-    if value is None:
+    if value is None or isinstance(value, bool):
         return None
+    if isinstance(value, (int, float)):
+        parts = [(float(value), False)] if value == value else []  # NaN → none
+    else:
+        parts = []
+        for part in str(value).replace(",", ";").split(";"):
+            m = _NUMBER.search(part)
+            if m:
+                parts.append((float(m.group()), "kv" in part.lower()))
     best: int | None = None
-    for part in str(value).replace(",", ";").split(";"):
-        digits = "".join(ch for ch in part if ch.isdigit())
-        if not digits:
-            continue
-        v = int(digits)
-        if "kv" in part.lower() and v < 10_000:
+    for v, is_kv in parts:
+        if is_kv and v < 10_000:
             v *= 1000
+        v = int(round(v))
         if 1_000 <= v <= 1_500_000 and (best is None or v > best):
             best = v
     return best
+
+
+_NUMBER = re.compile(r"\d+(?:\.\d+)?")
 
 
 def _prop(feature: dict, *names: str) -> Any:

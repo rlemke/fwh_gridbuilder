@@ -78,6 +78,52 @@ namespace grid.osm {
         result: FeatureSet
     ) with RetryPolicy() with Effect(kind = "external") with Cost(tier = "expensive")
 
+    /** Retrieve ONE feature from a PBF the caller supplies — no download.
+      *
+      * BEYOND UPSTREAM PARITY. Same extractor as `Retrieve`; earth_osm is
+      * pointed at `pbf` (local path or s3://) and never reaches Geofabrik.
+      * `region` names the earth_osm region the file stands for (`europe`,
+      * `LU`) and only labels the outputs. A separate facet rather than a
+      * `Retrieve` parameter so a runner without this code cannot claim the work
+      * and silently fall back to downloading.
+      *
+      * Pair with `Prefilter`: earth_osm parses every block in pure Python, so a
+      * continent is seconds filtered and hours raw. Memory follows the number of
+      * power features (~13 KB each), not the size of the source. */
+    event facet RetrieveFromPbf(
+        region: String,
+        feature: String,
+        pbf: String,
+        out_dir: String,
+        primary_name: String = "power",
+        force: Boolean = false,
+        memory_gb: Int = 0
+    ) => (
+        result: FeatureSet
+    ) with RetryPolicy() with Effect(kind = "io") with Cost(tier = "expensive")
+
+    /** Reduce a large PBF to the objects carrying `primary_name`.
+      *
+      * BEYOND UPSTREAM PARITY. `osmium tags-filter nwr/<primary_name>` keeps
+      * every node/way/relation with the key plus the nodes and members they
+      * reference, which is exactly what earth_osm needs; the extractor then runs
+      * unchanged on the small result. Same rows either way (verified on
+      * Luxembourg and Central America); 4.6 GB of South America becomes 23 MB.
+      *
+      * The output name carries the source's identity (size + etag), so a
+      * refreshed continent is re-filtered rather than matched to the old one. */
+    event facet Prefilter(
+        pbf: String,
+        out_dir: String,
+        primary_name: String = "power",
+        force: Boolean = false
+    ) => (
+        filtered: String,
+        source_bytes: Long,
+        filtered_bytes: Long,
+        was_cached: Boolean
+    ) with RetryPolicy() with Effect(kind = "io") with Cost(tier = "expensive") with Requires(memory_gb = 4)
+
     /** Count what came out and refuse an empty extraction.
       *
       * BEYOND UPSTREAM PARITY — grid-builder has no validate stage yet. It is
@@ -185,6 +231,166 @@ namespace grid.osm {
         // `country.sets` is already a list, so `+=` EXTENDS rather than nests
         // — the workflow's `sets` is every (country, feature) pair.
         yield BuildGrid(sets += country.sets, countries_done = 1)
+    }
+
+    /** Every feature for one region from one supplied PBF. Unlike
+      * `RetrieveCountry` the features need no `limit 1`: each extraction
+      * copies the PBF into its own private directory, so there is no shared
+      * download to race on. */
+    facet RetrieveRegion(
+        region: String,
+        features: Json,
+        pbf: String,
+        out_dir: String,
+        primary_name: String = "power",
+        force: Boolean = false,
+        memory_gb: Int = 0
+    ) => (
+        sets: Json
+    ) andThen foreach f in $.features {
+        got = RetrieveFromPbf(
+            region = $.region,
+            feature = $.f,
+            pbf = $.pbf,
+            out_dir = $.out_dir,
+            primary_name = $.primary_name,
+            force = $.force,
+            memory_gb = $.memory_gb
+        ) with Requires(memory_gb = "$.memory_gb")
+        yield RetrieveRegion(sets += got.result)
+    }
+
+    /** The grid for whole continents — and so for the world.
+      *
+      * BEYOND UPSTREAM PARITY. Upstream is per country and downloads from
+      * Geofabrik; here each `regions` entry names an extract already in the
+      * object store (`<pbf_base>/<region>-latest.osm.pbf`, the self-hosted
+      * planet split), which is filtered to power and then extracted by the same
+      * earth_osm. A region must also be an earth_osm region id — the eight
+      * continent extracts are named exactly that way.
+      *
+      * `memory_gb` is the claim floor for extraction. Measured peaks: South
+      * America 1.45 GB (52k features), Australia-Oceania 0.55 GB. */
+    workflow BuildRegionGrid(
+        regions: Json,
+        features: Json,
+        out_dir: String,
+        pbf_base: String = "s3://osm-extracts",
+        primary_name: String = "power",
+        force: Boolean = false,
+        concurrency: Int = 2,
+        memory_gb: Int = 4
+    ) => (
+        sets: Json,
+        regions_done: Int
+    ) andThen foreach r in $.regions limit $.concurrency {
+        flt = Prefilter(
+            pbf = $.pbf_base ++ "/" ++ $.r ++ "-latest.osm.pbf",
+            out_dir = $.out_dir ++ "/_prefiltered",
+            primary_name = $.primary_name,
+            force = $.force
+        )
+        region = RetrieveRegion(
+            region = $.r,
+            features = $.features,
+            pbf = flt.filtered,
+            out_dir = $.out_dir,
+            primary_name = $.primary_name,
+            force = $.force,
+            memory_gb = $.memory_gb
+        )
+        yield BuildRegionGrid(sets += region.sets, regions_done = 1)
+    }
+
+    /** One region's layers as one PMTiles file, for maps too large to embed.
+      *
+      * BEYOND UPSTREAM PARITY. Lines get a minzoom by voltage (>= 220 kV from
+      * z0, distribution from z8) so a zoomed-out view shows the backbone rather
+      * than a random sample. A file over `max_bytes` (GitHub Pages rejects
+      * > 100 MB) is re-tiled one zoom shallower; the result records the maxzoom
+      * it got. `dest` may be a local path or `s3://`. */
+    event facet TileRegion(
+        region: String,
+        geojson_paths: Json,
+        dest: String,
+        maxzoom: Int = 12,
+        max_bytes: Long = 95000000
+    ) => (
+        tiled: Json
+    ) with Effect(kind = "io") with Cost(tier = "expensive") with Requires(memory_gb = 6)
+
+    /** The MapLibre page over every region's PMTiles, referenced RELATIVE to
+      * the page so the directory publishes as a unit. */
+    event facet BuildTiledPage(
+        tiled: Json,
+        dest: String,
+        title: String = "OpenStreetMap power grid"
+    ) => (
+        path: String,
+        regions: Int
+    ) with Effect(kind = "io") with Cost(tier = "cheap")
+
+    /** The world's power grid as one map: per continent, filter → extract →
+      * tile; then one page over all of them.
+      *
+      * `map_dir` receives `<region>.pmtiles` + `index.html`; for the local
+      * gallery use `s3://afl-cache/cache/gridbuilder/maps/<name>`. */
+    workflow BuildWorldGridMap(
+        regions: Json,
+        out_dir: String,
+        map_dir: String,
+        features: Json = ["substation", "line", "cable"],
+        pbf_base: String = "s3://osm-extracts",
+        title: String = "World power grid (OpenStreetMap)",
+        concurrency: Int = 2,
+        memory_gb: Int = 4,
+        force: Boolean = false
+    ) => (
+        map: String,
+        tiled: Json
+    ) andThen {
+        tiles = TileAll(
+            regions = $.regions,
+            features = $.features,
+            out_dir = $.out_dir,
+            map_dir = $.map_dir,
+            pbf_base = $.pbf_base,
+            concurrency = $.concurrency,
+            memory_gb = $.memory_gb,
+            force = $.force
+        )
+        page = BuildTiledPage(tiled = tiles.tiled, dest = $.map_dir ++ "/index.html", title = $.title)
+        yield BuildWorldGridMap(map = page.path, tiled = tiles.tiled)
+    }
+
+    /** The per-region fan-out behind `BuildWorldGridMap`. */
+    facet TileAll(
+        regions: Json,
+        features: Json,
+        out_dir: String,
+        map_dir: String,
+        pbf_base: String,
+        concurrency: Int,
+        memory_gb: Int,
+        force: Boolean
+    ) => (
+        tiled: Json
+    ) andThen foreach r in $.regions limit $.concurrency {
+        flt = Prefilter(
+            pbf = $.pbf_base ++ "/" ++ $.r ++ "-latest.osm.pbf",
+            out_dir = $.out_dir ++ "/_prefiltered",
+            force = $.force
+        )
+        region = RetrieveRegion(
+            region = $.r,
+            features = $.features,
+            pbf = flt.filtered,
+            out_dir = $.out_dir,
+            force = $.force,
+            memory_gb = $.memory_gb
+        )
+        tile = TileRegion(region = $.r, geojson_paths = region.sets, dest = $.map_dir ++ "/" ++ $.r ++ ".pmtiles")
+        yield TileAll(tiled += tile.tiled)
     }
 
     /** Retrieve a grid and draw it.

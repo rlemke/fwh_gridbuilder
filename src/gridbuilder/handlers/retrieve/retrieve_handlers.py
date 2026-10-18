@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from ..shared.gridbuilder_utils import prefilter as _prefilter
 from ..shared.gridbuilder_utils import retrieve as _retrieve
 
 NAMESPACE = "grid.osm"
@@ -47,7 +48,52 @@ def handle_retrieve(payload: dict[str, Any]) -> dict[str, Any]:
     return {"result": result.as_dict()}
 
 
-_DISPATCH = {f"{NAMESPACE}.Retrieve": handle_retrieve}
+def handle_retrieve_from_pbf(payload: dict[str, Any]) -> dict[str, Any]:
+    step_log = payload.get("_step_log")
+    region, feature = payload["region"], payload["feature"]
+    result = _retrieve.retrieve_feature(
+        region,
+        feature,
+        payload["out_dir"],
+        primary_name=payload.get("primary_name") or _retrieve.DEFAULT_PRIMARY,
+        force=bool(payload.get("force", False)),
+        mp=False,  # forking a threaded runner deadlocks (see Retrieve)
+        pbf=payload["pbf"],
+    )
+    if callable(step_log):
+        verb = "reused cached" if result.was_cached else "extracted"
+        step_log(f"{region}/{feature}: {verb} {result.elements} element(s) from {payload['pbf']}", "success")
+    return {"result": result.as_dict()}
+
+
+def handle_prefilter(payload: dict[str, Any]) -> dict[str, Any]:
+    step_log = payload.get("_step_log")
+    result = _prefilter.prefilter(
+        payload["pbf"],
+        payload["out_dir"],
+        primary_name=payload.get("primary_name") or _retrieve.DEFAULT_PRIMARY,
+        force=bool(payload.get("force", False)),
+    )
+    if callable(step_log):
+        verb = "reused" if result.was_cached else "filtered"
+        step_log(
+            f"{payload['pbf']}: {verb} {result.source_bytes / 1e9:.1f} GB → "
+            f"{result.filtered_bytes / 1e6:.1f} MB",
+            "success",
+        )
+    return {
+        "filtered": result.filtered,
+        "source_bytes": result.source_bytes,
+        "filtered_bytes": result.filtered_bytes,
+        "was_cached": result.was_cached,
+    }
+
+
+_DISPATCH = {
+    f"{NAMESPACE}.Retrieve": handle_retrieve,
+    f"{NAMESPACE}.RetrieveFromPbf": handle_retrieve_from_pbf,
+    f"{NAMESPACE}.Prefilter": handle_prefilter,
+}
 
 
 def handle(payload: dict) -> dict:
