@@ -269,8 +269,10 @@ namespace grid.osm {
       * earth_osm. A region must also be an earth_osm region id — the eight
       * continent extracts are named exactly that way.
       *
-      * `memory_gb` is the claim floor for extraction. Measured peaks: South
-      * America 1.45 GB (52k features), Australia-Oceania 0.55 GB. */
+      * `memory_gb` is the claim floor for extraction, which peaks at ~15 KB per
+      * power feature. Measured 2026-10-17: Asia 8.75 GB (591k features),
+      * Europe 7.2 GB (1.14M), North America 5.5 GB (430k). 10 covers every
+      * continent. */
     workflow BuildRegionGrid(
         regions: Json,
         features: Json,
@@ -279,7 +281,7 @@ namespace grid.osm {
         primary_name: String = "power",
         force: Boolean = false,
         concurrency: Int = 2,
-        memory_gb: Int = 4
+        memory_gb: Int = 10
     ) => (
         sets: Json,
         regions_done: Int
@@ -343,7 +345,7 @@ namespace grid.osm {
         pbf_base: String = "s3://osm-extracts",
         title: String = "World power grid (OpenStreetMap)",
         concurrency: Int = 2,
-        memory_gb: Int = 4,
+        memory_gb: Int = 10,
         force: Boolean = false
     ) => (
         map: String,

@@ -149,21 +149,30 @@ def tile_region(
     return TiledRegion(region, dest, size, z, counts)
 
 
-def build_page(tiled: list[dict], dest: str, *, title: str) -> str:
+def build_page(tiled: list[dict], dest: str, *, title: str,
+               totals: dict[str, int] | None = None) -> str:
     """The MapLibre page. PMTiles are referenced RELATIVE to the page, so the
     directory publishes as a unit."""
     sources = [
         {"region": t["region"], "url": Path(t["pmtiles"]).name, "maxzoom": int(t["maxzoom"])}
         for t in tiled
     ]
-    totals: dict[str, int] = {}
-    for t in tiled:
-        for k, v in (t.get("features") or {}).items():
-            totals[k] = totals.get(k, 0) + int(v)
+    # Continent extracts overlap at their borders, so per-region counts summed
+    # double-count what crosses one. A caller holding de-duplicated counts
+    # passes them; otherwise the page says the sum is an upper bound.
+    note = ""
+    if totals is None:
+        totals = {}
+        for t in tiled:
+            for k, v in (t.get("features") or {}).items():
+                totals[k] = totals.get(k, 0) + int(v)
+        if len(tiled) > 1:
+            note = " (summed per region; features crossing a region border count in each)"
     html = (_PAGE
             .replace("__TITLE__", _esc(title))
             .replace("__SOURCES__", json.dumps(sources))
-            .replace("__TOTALS__", json.dumps(totals)))
+            .replace("__TOTALS__", json.dumps(totals))
+            .replace("__NOTE__", _esc(note)))
     with tempfile.NamedTemporaryFile("w", suffix=".html", delete=False, encoding="utf-8") as fh:
         fh.write(html)
         local = fh.name
@@ -205,7 +214,7 @@ Data © OpenStreetMap contributors (ODbL), extracted with earth_osm.</small></di
 <script>
 const SOURCES = __SOURCES__, TOTALS = __TOTALS__;
 document.getElementById('stats').textContent =
-  Object.entries(TOTALS).map(([k,v]) => v.toLocaleString() + ' ' + k + (v === 1 ? '' : 's')).join(' · ');
+  Object.entries(TOTALS).map(([k,v]) => v.toLocaleString() + ' ' + k + (v === 1 ? '' : 's')).join(' · ') + '__NOTE__';
 const protocol = new pmtiles.Protocol(); maplibregl.addProtocol('pmtiles', protocol.tile);
 const base = new URL('.', location.href).href;
 const map = new maplibregl.Map({container: 'map', center: [10, 25], zoom: 1.6, hash: true,
@@ -218,7 +227,9 @@ const map = new maplibregl.Map({container: 'map', center: [10, 25], zoom: 1.6, h
 map.addControl(new maplibregl.NavigationControl());
 const kvColor = ['step', ['get', 'kv'], '#7f8c8d', 33, '#2e86de', 110, '#f39c12', 220, '#e8432e'];
 const byLayer = {line: [], cable: [], substation: []};
-map.on('load', () => {
+// 'style.load', not 'load': 'load' waits for every basemap tile, so a slow or
+// throttled raster server would hold back the grid itself.
+map.once('style.load', () => {
   for (const s of SOURCES) {
     const id = 'src-' + s.region;
     map.addSource(id, {type: 'vector', url: 'pmtiles://' + base + s.url, maxzoom: s.maxzoom});

@@ -112,7 +112,7 @@ python tools/compare_with_snakemake.py \
 ## Tests
 
 ```bash
-pytest            # 25 tests, no network and no MongoDB (use_mock)
+pytest            # 72 tests, no network and no MongoDB (osmium/tippecanoe ones skip if absent)
 ```
 
 ## Licence
@@ -146,6 +146,64 @@ prefix `cache/` — which is what `map_dest` above does. Verified: 1,459 feature
 through `census.Publish.PublishWebBundle`, which needs a `GITHUB_TOKEN`. That
 token is not on every host, so a map built here is browsable locally and
 published only from a host that holds it.
+
+## The world grid — continents from our own extracts
+
+Upstream retrieves per country and downloads each extract from Geofabrik. Two
+things stop that scaling: this fleet cannot reach Geofabrik, and earth_osm
+parses every PBF block in pure Python, so its time follows the size of the
+INPUT while the output — power infrastructure — is a fraction of a percent of it.
+
+`grid.osm.BuildWorldGridMap` runs per continent instead: `Prefilter`
+(`osmium tags-filter nwr/power`) reduces the self-hosted continent extract to
+its power objects plus the nodes they reference, `RetrieveFromPbf` runs the
+**same earth_osm** on that, and `TileRegion` writes one PMTiles per continent.
+
+**Same data.** Raw and pre-filtered inputs give identical rows, ids and tags
+(Luxembourg 1,490 rows, Central America 6,980); coordinates agree to ~1e-13°,
+float noise from osmium re-encoding, far below OSM's 1e-7 precision. Central
+America: 148 s raw → 3.3 s filtered.
+
+Measured 2026-10-17 (planet split of that day):
+
+| region | extract | filtered | extract time | peak memory | features |
+|---|---:|---:|---:|---:|---:|
+| Europe | 41.0 GB | 294 MB | 215 s | 7.2 GB | 1,137,147 |
+| Asia | 18.6 GB | 143 MB | 178 s | 8.75 GB | 590,960 |
+| North America | 21.3 GB | 130 MB | 129 s | 5.5 GB | 430,091 |
+| Russia | 4.6 GB | 37 MB | 46 s | 2.3 GB | 174,570 |
+| South America | 4.6 GB | 23 MB | 30 s | 1.45 GB | 52,028 |
+| Africa | 8.9 GB | 19 MB | 22 s | 1.2 GB | 45,565 |
+| Australia-Oceania | 1.7 GB | 23 MB | 17 s | 0.55 GB | 32,557 |
+| Central America | 0.9 GB | 2.6 MB | 3.3 s | 0.23 GB | 6,980 |
+
+**The bound is memory per feature (~15 KB), not extract size** — so the
+continent is the right unit, and even Europe fits a 10 GB floor. World total,
+de-duplicated across continent borders: **1,185,560 lines, 185,876 cables,
+884,839 substations.** (Antarctica has no self-hosted extract and is absent.)
+
+⚠️ The filter is disk-bound. osmium makes ~3 passes over the source: Asia took
+**83 min on a USB disk and North America 70 s on an internal SSD** — put
+`FW_GRIDBUILDER_DATA_DIR` on fast local storage.
+
+**The map.** One page, one PMTiles per continent, read by HTTP range request.
+Lines get a tippecanoe `minzoom` from their voltage (≥ 220 kV from z0,
+distribution from z8), so zoomed out you see the backbone rather than a random
+sample. Files are kept under 95 MB (GitHub's limit is 100) by re-tiling one zoom
+shallower: Europe and Asia end at z10, North America z11, the rest z12.
+
+```bash
+fw ffl run --primary src/gridbuilder/ffl/gridbuilder.ffl \
+  --workflow grid.osm.BuildWorldGridMap \
+  --inputs '{"regions": ["north-america","central-america","south-america","europe",
+                         "africa","russia","asia","australia-oceania"],
+             "out_dir": "s3://afl-cache/gridbuilder/world",
+             "map_dir": "s3://afl-cache/cache/gridbuilder/maps/world"}'
+```
+
+From a terminal (no runtime): `retrieve_osm.py --countries europe --pbf
+s3://osm-extracts/europe-latest.osm.pbf --prefilter --features substation line
+cable --out-dir out/`.
 
 ## Quality and gap audit
 
