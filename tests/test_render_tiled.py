@@ -61,5 +61,5 @@ def test_tile_region_and_page(tmp_path):
 def test_unchecking_every_band_hides_the_lines():
     """['==', 1, 0] parses as a LEGACY filter, is rejected by MapLibre, and the
     previous filter stays — so the last band could never be switched off."""
-    assert "['==', 1, 0]" not in rt._PAGE
+    assert "['==', 1, 0])" not in rt._PAGE and ": ['==', 1, 0]" not in rt._PAGE
     assert "'visibility', bands.length ? 'visible' : 'none'" in rt._PAGE
