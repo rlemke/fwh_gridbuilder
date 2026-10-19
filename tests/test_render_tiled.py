@@ -56,3 +56,10 @@ def test_tile_region_and_page(tmp_path):
     html = Path(page).read_text()
     assert '"url": "LU.pmtiles"' in html and "LU &lt;grid&gt;" in html
     assert Path(page).stat().st_mode & 0o044  # readable when served
+
+
+def test_unchecking_every_band_hides_the_lines():
+    """['==', 1, 0] parses as a LEGACY filter, is rejected by MapLibre, and the
+    previous filter stays — so the last band could never be switched off."""
+    assert "['==', 1, 0]" not in rt._PAGE
+    assert "'visibility', bands.length ? 'visible' : 'none'" in rt._PAGE

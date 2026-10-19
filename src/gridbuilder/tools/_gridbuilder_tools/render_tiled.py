@@ -251,7 +251,13 @@ map.once('style.load', () => {
     if (lyr === 'line') {
       const bands = [[-1e9, 33], [33, 110], [110, 220], [220, 1e9]].reverse().filter((_, i) => on[i].checked);
       const f = ['any', ...bands.map(([lo, hi]) => ['all', ['>=', ['get', 'kv'], lo], ['<', ['get', 'kv'], hi]])];
-      for (const id of byLayer.line) map.setFilter(id, bands.length ? f : ['==', 1, 0]);
+      // No band checked → hide the layer. A "match nothing" filter such as
+      // ['==', 1, 0] parses as the LEGACY filter syntax, is rejected, and leaves
+      // the previous filter in force — the last band could never be unchecked.
+      for (const id of byLayer.line) {
+        if (bands.length) map.setFilter(id, f);
+        map.setLayoutProperty(id, 'visibility', bands.length ? 'visible' : 'none');
+      }
     } else for (const id of byLayer[lyr]) map.setLayoutProperty(id, 'visibility', box.checked ? 'visible' : 'none');
   });
   const popup = new maplibregl.Popup({closeButton: false});
