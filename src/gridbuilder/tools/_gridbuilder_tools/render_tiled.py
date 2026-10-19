@@ -208,9 +208,9 @@ html,body,#map{margin:0;height:100%;background:#1b1d22}
 <div id="panel"><h1>__TITLE__</h1>
 <label><input type="checkbox" data-layer="line" checked> <span class="sw" style="background:#e8432e"></span>≥ 220 kV</label>
 <label><input type="checkbox" data-layer="line" checked> <span class="sw" style="background:#f39c12"></span>110–219 kV</label>
-<label><input type="checkbox" data-layer="line" checked> <span class="sw" style="background:#2e86de"></span>33–109 kV</label>
-<label><input type="checkbox" data-layer="line" checked> <span class="sw" style="background:#7f8c8d"></span>&lt; 33 kV / unknown</label>
-<label><input type="checkbox" data-layer="cable" checked> <span class="sw" style="background:repeating-linear-gradient(90deg,#8e44ad 0 4px,transparent 4px 7px)"></span>Underground / submarine cable</label>
+<label><input type="checkbox" data-layer="line" checked> <span class="sw" style="background:#3aa0ff"></span>33–109 kV</label>
+<label><input type="checkbox" data-layer="line" checked> <span class="sw" style="background:#a3e635"></span>&lt; 33 kV / unknown</label>
+<label><input type="checkbox" data-layer="cable" checked> <span class="sw" style="background:repeating-linear-gradient(90deg,#ff4fd8 0 4px,transparent 4px 7px)"></span>Underground / submarine cable</label>
 <label><input type="checkbox" data-layer="substation" checked> <span class="dot" style="background:#111;border:1px solid #fff"></span>Substation</label>
 <small id="stats"></small><br>
 <small>Lines appear by voltage as you zoom in: transmission first, distribution from z8.
@@ -229,7 +229,7 @@ const map = new maplibregl.Map({container: 'map', center: [10, 25], zoom: 1.6, h
     layers: [{id: 'osm', type: 'raster', source: 'osm',
       paint: {'raster-saturation': -0.9, 'raster-brightness-max': 0.55, 'raster-contrast': -0.1}}]}});
 map.addControl(new maplibregl.NavigationControl());
-const kvColor = ['step', ['get', 'kv'], '#7f8c8d', 33, '#2e86de', 110, '#f39c12', 220, '#e8432e'];
+const kvColor = ['step', ['get', 'kv'], '#a3e635', 33, '#3aa0ff', 110, '#f39c12', 220, '#e8432e'];
 const byLayer = {line: [], cable: [], substation: []};
 // 'style.load', not 'load': 'load' waits for every basemap tile, so a slow or
 // throttled raster server would hold back the grid itself.
@@ -241,7 +241,7 @@ map.once('style.load', () => {
       byLayer[lyr].push(lyr + '-' + s.region); };
     add('line', {type: 'line', layout: {'line-cap': 'round'}, paint: {'line-color': kvColor,
       'line-width': ['interpolate', ['linear'], ['zoom'], 2, ['step', ['get', 'kv'], 0.4, 220, 1.1], 10, ['step', ['get', 'kv'], 1, 110, 2.2]]}});
-    add('cable', {type: 'line', paint: {'line-color': '#8e44ad', 'line-dasharray': [2, 1.5],
+    add('cable', {type: 'line', paint: {'line-color': '#ff4fd8', 'line-dasharray': [2, 1.5],
       'line-width': ['interpolate', ['linear'], ['zoom'], 2, 0.6, 10, 2]}});
     add('substation', {type: 'circle', paint: {'circle-color': kvColor, 'circle-stroke-color': '#fff',
       'circle-stroke-width': 0.6, 'circle-radius': ['interpolate', ['linear'], ['zoom'], 3, 1.2, 12, 5]}});
